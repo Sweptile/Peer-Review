@@ -3,40 +3,36 @@
 Why this exists: your Canvas assignment is an External Tool launch
 straight into Gradescope, so Canvas never holds the submitted file --
 Canvas's native "Require Peer Reviews" feature has nothing to hand
-out, and Gradescope has no student-facing peer-grading mode. This
-module is the workaround, built around a real Canvas assignment you
-create (e.g. "Peer Review") where students type/upload their review
-of their assigned peer's work -- because that's what makes step 2
-below possible using nothing but Canvas's own gradebook.
+out, and Gradescope has no student-facing peer-grading mode at all.
+This module is the workaround, built around one real Canvas assignment
+you create (e.g. "Peer Review") where students type their review of
+their assigned peer's work.
 
-The loop has two legs, each a separate CLI command so you can run them
-weeks apart:
+Both legs of the loop post *private submission comments* on that same
+"Peer Review" assignment -- visible only to the student and you, right
+on the page they already go to submit, no separate inbox to check:
 
-  1. send-packets   -- after you've downloaded submissions from
-     Gradescope yourself, each *reviewer* gets a private Canvas inbox
-     message with their own file + their assigned peer's file
-     attached, telling them which peer to review and pointing them at
-     the "Peer Review" assignment to submit their write-up to.
+  1. send-packets    -- before a reviewer has submitted anything, they
+     get a comment on their own (still-empty) "Peer Review" submission
+     with their own file and their assigned peer's file attached, plus
+     a note on who they're reviewing.
 
-  2. forward-reviews -- once reviewers have submitted their write-ups
-     to that assignment, each *reviewee* gets a private Canvas inbox
-     message containing the text their reviewer wrote about their
-     work.
+  2. forward-reviews -- once reviewers have submitted their write-ups,
+     each *reviewee* gets a comment on THEIR OWN "Peer Review"
+     submission containing the text their reviewer wrote about their
+     work. (Every student is both a reviewer and a reviewee under the
+     matching this project generates, so they already have their own
+     submission there to comment on.)
 
-Grading the review itself (your "different assignment" score) needs
-no extra tooling from this project at all: once step 2's reviews are
-real submissions on a real Canvas assignment, you grade that
-assignment in SpeedGrader exactly like any other -- that's the whole
-point of routing reviews through a Canvas assignment instead of, say,
-a spreadsheet.
-
-Delivery uses Canvas Conversations (the inbox), not submission
-comments, so it doesn't depend on a submission object already
-existing and doesn't care which assignment page (if any) it's near.
+Grading the review itself needs no extra tooling from this project at
+all: once reviews are real submissions on a real Canvas assignment,
+grade that assignment in SpeedGrader exactly like any other -- that's
+the point of routing reviews through a Canvas assignment instead of,
+say, a spreadsheet.
 
 Nothing is sent to Canvas until you pass --live on the CLI. Without
 it, both commands run in dry-run mode: they resolve every student
-against the Canvas roster and print exactly what would be sent.
+against the Canvas roster and print exactly what would be posted.
 """
 
 from __future__ import annotations
@@ -82,21 +78,11 @@ def _roster_by_email(course) -> dict:
     return roster
 
 
-def _send_message(canvas: Canvas, *, user_id: int, subject: str, body: str, attachment_paths: list[str]) -> None:
-    attachment_ids = []
-    me = canvas.get_current_user()
+def _post_comment(submission, *, text: str | None, attachment_paths: list[str]) -> None:
+    if text:
+        submission.edit(comment={"text_comment": text, "group_comment": False})
     for path in attachment_paths:
-        ok, response = me.upload(path)
-        if not ok:
-            raise RuntimeError(f"Upload failed for {path}: {response}")
-        attachment_ids.append(response["id"])
-
-    canvas.create_conversation(
-        recipients=[str(user_id)],
-        body=body,
-        subject=subject,
-        attachment_ids=attachment_ids,
-    )
+        submission.upload_comment(path)
 
 
 def send_packets(
@@ -104,14 +90,15 @@ def send_packets(
     canvas_url: str,
     token: str,
     course_id: int,
-    peer_review_assignment_name: str,
+    peer_review_assignment_id: int,
     assignments_csv: str,
     live: bool = False,
 ) -> list[ActionResult]:
-    """Send each reviewer their own file + their assigned peer's file."""
+    """Comment on each reviewer's own file + their assigned peer's file."""
     rows = _load_assignments_csv(assignments_csv)
     canvas = Canvas(canvas_url, token)
     course = canvas.get_course(course_id)
+    assignment = course.get_assignment(peer_review_assignment_id)
     roster = _roster_by_email(course)
 
     results: list[ActionResult] = []
@@ -122,12 +109,9 @@ def send_packets(
             results.append(ActionResult(email, False, "No matching Canvas enrollment for this email"))
             continue
 
-        subject = "Your peer review assignment"
-        body = (
+        note = (
             f"You're assigned to review {row['peer_name']}'s submission (attached), "
-            f"alongside your own submission (also attached) for comparison. "
-            f"Please submit your written review to the \"{peer_review_assignment_name}\" "
-            f"assignment on Canvas."
+            f"alongside your own submission (also attached) for comparison."
         )
         attachments = [row["reviewer_submission_file"], row["peer_submission_file"]]
 
@@ -136,15 +120,16 @@ def send_packets(
                 ActionResult(
                     email,
                     True,
-                    f"[DRY RUN] would message Canvas user {user.id} ({user.name}): "
-                    f'"{body}" + attach {attachments}',
+                    f"[DRY RUN] would comment on Canvas user {user.id} ({user.name})'s "
+                    f'"Peer Review" submission: "{note}" + attach {attachments}',
                 )
             )
             continue
 
         try:
-            _send_message(canvas, user_id=user.id, subject=subject, body=body, attachment_paths=attachments)
-            results.append(ActionResult(email, True, "sent"))
+            submission = assignment.get_submission(user.id)
+            _post_comment(submission, text=note, attachment_paths=attachments)
+            results.append(ActionResult(email, True, "posted"))
         except Exception as exc:  # noqa: BLE001 -- surfaced per-student, not fatal to the batch
             results.append(ActionResult(email, False, f"Canvas API error: {exc}"))
 
@@ -160,7 +145,7 @@ def forward_reviews(
     assignments_csv: str,
     live: bool = False,
 ) -> list[ActionResult]:
-    """Pull each reviewer's submitted write-up and send it to the reviewee."""
+    """Pull each reviewer's submitted write-up and comment it onto the reviewee's own submission."""
     rows = _load_assignments_csv(assignments_csv)
     canvas = Canvas(canvas_url, token)
     course = canvas.get_course(course_id)
@@ -181,14 +166,14 @@ def forward_reviews(
             results.append(ActionResult(reviewee_email, False, "Reviewee has no matching Canvas enrollment"))
             continue
 
-        submission = assignment.get_submission(reviewer.id)
-        if getattr(submission, "workflow_state", "unsubmitted") == "unsubmitted":
+        reviewer_submission = assignment.get_submission(reviewer.id)
+        if getattr(reviewer_submission, "workflow_state", "unsubmitted") == "unsubmitted":
             results.append(
                 ActionResult(reviewee_email, False, f"{row['reviewer_name']} hasn't submitted a review yet -- skipped")
             )
             continue
 
-        review_text = getattr(submission, "body", None)
+        review_text = getattr(reviewer_submission, "body", None)
         if not review_text:
             results.append(
                 ActionResult(
@@ -200,23 +185,24 @@ def forward_reviews(
             )
             continue
 
-        subject = f"Peer feedback on your submission from {row['reviewer_name']}"
-        body = review_text
+        note = f"Feedback on your submission from {row['reviewer_name']}:\n\n{review_text}"
 
         if not live:
             results.append(
                 ActionResult(
                     reviewee_email,
                     True,
-                    f"[DRY RUN] would message Canvas user {reviewee.id} ({reviewee.name}) "
-                    f"with {row['reviewer_name']}'s review ({len(review_text)} chars)",
+                    f"[DRY RUN] would comment on Canvas user {reviewee.id} ({reviewee.name})'s "
+                    f"own \"Peer Review\" submission with {row['reviewer_name']}'s review "
+                    f"({len(review_text)} chars)",
                 )
             )
             continue
 
         try:
-            _send_message(canvas, user_id=reviewee.id, subject=subject, body=body, attachment_paths=[])
-            results.append(ActionResult(reviewee_email, True, "sent"))
+            reviewee_submission = assignment.get_submission(reviewee.id)
+            _post_comment(reviewee_submission, text=note, attachment_paths=[])
+            results.append(ActionResult(reviewee_email, True, "posted"))
         except Exception as exc:  # noqa: BLE001
             results.append(ActionResult(reviewee_email, False, f"Canvas API error: {exc}"))
 

@@ -2,9 +2,9 @@
 
 These don't hit the network -- they fake out just enough of the
 canvasapi surface (get_course, get_users, get_assignment,
-get_submission, create_conversation, get_current_user().upload) to
-prove the *logic* is right: roster-email matching, dry-run vs --live
-gating, and the unsubmitted/no-text-body skip paths. Whether the real
+get_submission, submission.edit, submission.upload_comment) to prove
+the *logic* is right: roster-email matching, dry-run vs --live gating,
+and the unsubmitted/no-text-body skip paths. Whether the real
 canvasapi calls are wired up correctly can only be confirmed against a
 live Canvas instance, which this repo intentionally never touches on
 its own.
@@ -12,6 +12,7 @@ its own.
 
 from __future__ import annotations
 
+import csv
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -24,32 +25,6 @@ def make_user(uid, name, email):
     return SimpleNamespace(id=uid, name=name, email=email)
 
 
-def make_fake_canvas(students, submissions=None):
-    """students: list of (id, name, email). submissions: {user_id: SimpleNamespace}"""
-    users = [make_user(*s) for s in students]
-
-    course = MagicMock()
-    course.get_users.return_value = users
-
-    assignment = MagicMock()
-
-    def get_submission(user_id, **kwargs):
-        if submissions and user_id in submissions:
-            return submissions[user_id]
-        return SimpleNamespace(workflow_state="unsubmitted", body=None)
-
-    assignment.get_submission.side_effect = get_submission
-    course.get_assignment.return_value = assignment
-
-    canvas = MagicMock()
-    canvas.get_course.return_value = course
-    current_user = MagicMock()
-    current_user.upload.return_value = (True, {"id": 999})
-    canvas.get_current_user.return_value = current_user
-
-    return canvas, course, assignment
-
-
 ROSTER = [
     (1, "Ada Lovelace", "ada@school.edu"),
     (2, "Alan Turing", "alan@school.edu"),
@@ -57,9 +32,41 @@ ROSTER = [
 ]
 
 
-def write_assignments_csv(tmp_path, rows):
-    import csv
+def make_fake_canvas(students, submissions=None):
+    """students: list of (id, name, email).
 
+    submissions: {user_id: SimpleNamespace(workflow_state=..., body=...)}
+    used for reads (forward_reviews looking at the reviewer's write-up).
+    Each returned submission is a MagicMock so .edit/.upload_comment
+    calls can be asserted on regardless of read/write path.
+    """
+    users = [make_user(*s) for s in students]
+
+    course = MagicMock()
+    course.get_users.return_value = users
+
+    assignment = MagicMock()
+    submission_mocks = {}
+
+    def get_submission(user_id, **kwargs):
+        if user_id not in submission_mocks:
+            base = (submissions or {}).get(user_id, SimpleNamespace(workflow_state="unsubmitted", body=None))
+            m = MagicMock()
+            m.workflow_state = base.workflow_state
+            m.body = base.body
+            submission_mocks[user_id] = m
+        return submission_mocks[user_id]
+
+    assignment.get_submission.side_effect = get_submission
+    course.get_assignment.return_value = assignment
+
+    canvas = MagicMock()
+    canvas.get_course.return_value = course
+
+    return canvas, course, assignment, submission_mocks
+
+
+def write_assignments_csv(tmp_path, rows):
     path = tmp_path / "assignments.csv"
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -88,8 +95,8 @@ def patch_canvas(monkeypatch):
     return holder
 
 
-def test_send_packets_dry_run_does_not_call_create_conversation(tmp_path, patch_canvas):
-    canvas, course, _ = make_fake_canvas(ROSTER)
+def test_send_packets_dry_run_does_not_touch_submission(tmp_path, patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
 
     assignments_csv = write_assignments_csv(
@@ -101,7 +108,7 @@ def test_send_packets_dry_run_does_not_call_create_conversation(tmp_path, patch_
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_name="Peer Review",
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=False,
     )
@@ -109,38 +116,45 @@ def test_send_packets_dry_run_does_not_call_create_conversation(tmp_path, patch_
     assert len(results) == 1
     assert results[0].ok
     assert "DRY RUN" in results[0].detail
-    canvas.create_conversation.assert_not_called()
+    assignment.get_submission.assert_not_called()
 
 
-def test_send_packets_live_calls_create_conversation(tmp_path, patch_canvas):
-    canvas, course, _ = make_fake_canvas(ROSTER)
+def test_send_packets_live_comments_on_reviewers_own_submission(tmp_path, patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
+
+    reviewer_file = str(tmp_path / "ada.pdf")
+    peer_file = str(tmp_path / "alan.pdf")
+    (tmp_path / "ada.pdf").write_text("x")
+    (tmp_path / "alan.pdf").write_text("x")
 
     assignments_csv = write_assignments_csv(
         tmp_path,
-        [["Ada Lovelace", "ada@school.edu", str(tmp_path / "ada.pdf"), "Alan Turing", "alan@school.edu", str(tmp_path / "alan.pdf")]],
+        [["Ada Lovelace", "ada@school.edu", reviewer_file, "Alan Turing", "alan@school.edu", peer_file]],
     )
-    (tmp_path / "ada.pdf").write_text("x")
-    (tmp_path / "alan.pdf").write_text("x")
 
     results = cd.send_packets(
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_name="Peer Review",
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=True,
     )
 
     assert results[0].ok
-    canvas.create_conversation.assert_called_once()
-    _, kwargs = canvas.create_conversation.call_args
-    assert kwargs["recipients"] == ["1"]  # Ada's Canvas user id
-    assert kwargs["attachment_ids"] == [999, 999]
+    assignment.get_submission.assert_called_once_with(1)  # Ada's own submission, not Alan's
+    ada_submission = subs[1]
+    ada_submission.edit.assert_called_once()
+    _, kwargs = ada_submission.edit.call_args
+    assert "Alan Turing" in kwargs["comment"]["text_comment"]
+    assert ada_submission.upload_comment.call_count == 2
+    ada_submission.upload_comment.assert_any_call(reviewer_file)
+    ada_submission.upload_comment.assert_any_call(peer_file)
 
 
 def test_send_packets_reports_unmatched_email(tmp_path, patch_canvas):
-    canvas, course, _ = make_fake_canvas(ROSTER)
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
 
     assignments_csv = write_assignments_csv(
@@ -152,7 +166,7 @@ def test_send_packets_reports_unmatched_email(tmp_path, patch_canvas):
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_name="Peer Review",
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=False,
     )
@@ -162,7 +176,7 @@ def test_send_packets_reports_unmatched_email(tmp_path, patch_canvas):
 
 
 def test_forward_reviews_skips_unsubmitted(tmp_path, patch_canvas):
-    canvas, course, assignment = make_fake_canvas(ROSTER, submissions={})
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions={})
     patch_canvas["canvas"] = canvas
 
     assignments_csv = write_assignments_csv(
@@ -174,7 +188,7 @@ def test_forward_reviews_skips_unsubmitted(tmp_path, patch_canvas):
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_id=42,
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=False,
     )
@@ -185,7 +199,7 @@ def test_forward_reviews_skips_unsubmitted(tmp_path, patch_canvas):
 
 def test_forward_reviews_skips_no_text_body(tmp_path, patch_canvas):
     submissions = {1: SimpleNamespace(workflow_state="submitted", body=None)}
-    canvas, course, assignment = make_fake_canvas(ROSTER, submissions=submissions)
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
 
     assignments_csv = write_assignments_csv(
@@ -197,7 +211,7 @@ def test_forward_reviews_skips_no_text_body(tmp_path, patch_canvas):
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_id=42,
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=False,
     )
@@ -206,9 +220,9 @@ def test_forward_reviews_skips_no_text_body(tmp_path, patch_canvas):
     assert "no text body" in results[0].detail
 
 
-def test_forward_reviews_dry_run_reports_would_send(tmp_path, patch_canvas):
+def test_forward_reviews_dry_run_reports_would_post(tmp_path, patch_canvas):
     submissions = {1: SimpleNamespace(workflow_state="submitted", body="Great work, nice tests!")}
-    canvas, course, assignment = make_fake_canvas(ROSTER, submissions=submissions)
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
 
     assignments_csv = write_assignments_csv(
@@ -220,19 +234,20 @@ def test_forward_reviews_dry_run_reports_would_send(tmp_path, patch_canvas):
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_id=42,
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=False,
     )
 
     assert results[0].ok
     assert "DRY RUN" in results[0].detail
-    canvas.create_conversation.assert_not_called()
+    # Only the read of the reviewer's own submission happened; nothing written.
+    subs[1].edit.assert_not_called()
 
 
-def test_forward_reviews_live_sends_reviewers_text_to_reviewee(tmp_path, patch_canvas):
+def test_forward_reviews_live_comments_reviewers_text_onto_reviewees_own_submission(tmp_path, patch_canvas):
     submissions = {1: SimpleNamespace(workflow_state="submitted", body="Great work, nice tests!")}
-    canvas, course, assignment = make_fake_canvas(ROSTER, submissions=submissions)
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
 
     assignments_csv = write_assignments_csv(
@@ -244,13 +259,15 @@ def test_forward_reviews_live_sends_reviewers_text_to_reviewee(tmp_path, patch_c
         canvas_url="https://fake",
         token="t",
         course_id=1,
-        peer_review_assignment_id=42,
+        peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=True,
     )
 
     assert results[0].ok
-    canvas.create_conversation.assert_called_once()
-    _, kwargs = canvas.create_conversation.call_args
-    assert kwargs["recipients"] == ["2"]  # Alan (the reviewee) gets Ada's review
-    assert kwargs["body"] == "Great work, nice tests!"
+    # Comment lands on Alan's (the reviewee's, user id 2) own submission.
+    alan_submission = subs[2]
+    alan_submission.edit.assert_called_once()
+    _, kwargs = alan_submission.edit.call_args
+    assert "Ada Lovelace" in kwargs["comment"]["text_comment"]
+    assert "Great work, nice tests!" in kwargs["comment"]["text_comment"]

@@ -23,9 +23,11 @@ The Gradescope↔Canvas LTI link also can't be repurposed to show a
 student their peer's submission — that link authenticates *one*
 student into *their own* Gradescope page. Gradescope has no notion of
 "let student X see student Y's file" short of grader access. So
-delivery has to happen outside that link entirely — this tool does it
-through Canvas's inbox (Conversations), which every student already
-checks.
+delivery has to happen outside that link entirely — this tool posts it
+as a **private submission comment** on a Canvas assignment (a "Peer
+Review" text-entry assignment you create), which puts it right on the
+page each student already visits to turn their review in, visible only
+to them and you.
 
 ## How matching works
 
@@ -62,10 +64,10 @@ Gradescope (submissions)         Canvas (roster + delivery + grading)
    each student's PDF                 → assignments.csv (who reviews whom)
 
                                    3. peer_review send-packets
-                                        → each reviewer gets a Canvas inbox
-                                          message: their own file + their
-                                          assigned peer's file, pointing them
-                                          at the "Peer Review" assignment
+                                        → each reviewer gets a private comment
+                                          on their own (still-empty) "Peer
+                                          Review" submission: their own file +
+                                          their assigned peer's file attached
 
                                    4. Students write their review as a normal
                                         Canvas submission (text entry) to that
@@ -73,9 +75,10 @@ Gradescope (submissions)         Canvas (roster + delivery + grading)
 
                                    5. peer_review forward-reviews
                                         → pulls each reviewer's submitted text
-                                          and messages it to the reviewee, so
-                                          they see what was said about their
-                                          work
+                                          and comments it onto the reviewee's
+                                          OWN "Peer Review" submission, so they
+                                          see what was said about their work
+                                          right next to their own review
 
                                    6. You grade the "Peer Review" assignment
                                         in SpeedGrader like any other Canvas
@@ -119,25 +122,32 @@ Open `assignments.csv` and sanity-check it before sending anything.
 Requires a Canvas API token (Canvas → Account → Settings → **New
 Access Token**) and the numeric course ID (visible in the course URL).
 
+You'll need the "Peer Review" assignment's numeric ID too (visible in
+its Canvas URL) — create that assignment first (text-entry submission
+type) if you haven't yet.
+
 ```
 export CANVAS_API_TOKEN=...
 python -m peer_review.cli send-packets \
   --assignments assignments.csv \
   --canvas-url https://yourschool.instructure.com \
   --course-id 12345 \
-  --peer-review-assignment-name "Peer Review"
+  --peer-review-assignment-id 67890
 ```
 
 This **defaults to a dry run** — it resolves every reviewer's email
-against the live Canvas roster and prints exactly what it would send,
-without sending anything. Read the output, check for unmatched
-emails, then re-run with `--live` to actually message students.
+against the live Canvas roster and prints exactly what it would post,
+without posting anything. Read the output, check for unmatched
+emails, then re-run with `--live` to actually comment on students'
+submissions. (Canvas allows comments on an assignment before a student
+has submitted to it, so this works even though nobody's turned in
+their review yet.)
 
 ### Step 4 — students write their reviews
 
-This is just a normal Canvas assignment you create ("Peer Review",
-text-entry submission type). No tooling needed — students already
-have their peer's file from step 3's message.
+Students open the "Peer Review" assignment, see the comment with their
+own file and their peer's file attached, and submit their write-up as
+a normal Canvas text-entry submission. No extra tooling needed here.
 
 ### Step 5 — forward reviews to reviewees
 
@@ -151,10 +161,16 @@ python -m peer_review.cli forward-reviews \
   --peer-review-assignment-id 67890
 ```
 
-Also dry-run by default; add `--live` to send. Reviewers who haven't
+Also dry-run by default; add `--live` to post. Reviewers who haven't
 submitted yet, or whose submission has no text body (e.g. a stray file
 upload instead of text entry), are reported individually rather than
 silently skipped, so you can chase down stragglers.
+
+The forwarded review is posted on the *reviewee's own* "Peer Review"
+submission, not the reviewer's — this relies on the reviewee already
+having a submission object there themselves, which they do, because
+under this project's matching everyone is both a reviewer for one
+person and a reviewee for another.
 
 ### Step 6 — grade the reviews
 

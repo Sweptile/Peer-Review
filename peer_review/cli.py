@@ -56,11 +56,11 @@ def _cmd_send_packets(args: argparse.Namespace) -> int:
         canvas_url=args.canvas_url,
         token=token,
         course_id=args.course_id,
-        peer_review_assignment_name=args.peer_review_assignment_name,
+        peer_review_assignment_id=args.peer_review_assignment_id,
         assignments_csv=args.assignments,
         live=args.live,
     )
-    return _report(results, live=args.live, verb="reviewers messaged")
+    return _report(results, live=args.live, verb="reviewers commented on")
 
 
 def _cmd_forward_reviews(args: argparse.Namespace) -> int:
@@ -78,13 +78,13 @@ def _cmd_forward_reviews(args: argparse.Namespace) -> int:
         assignments_csv=args.assignments,
         live=args.live,
     )
-    return _report(results, live=args.live, verb="reviewees messaged")
+    return _report(results, live=args.live, verb="reviewees commented on")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="peer_review",
-        description="Match students for peer review and (optionally) deliver packets via Canvas.",
+        description="Match students for peer review and (optionally) deliver packets via Canvas submission comments.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -102,23 +102,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_send = sub.add_parser(
         "send-packets",
-        help="Message each reviewer their own file + their assigned peer's file via Canvas inbox.",
+        help="Comment on each reviewer's own 'Peer Review' submission with their own file + their assigned peer's file.",
     )
     p_send.add_argument("--assignments", required=True, help="assignments.csv produced by 'match'")
     p_send.add_argument("--canvas-url", required=True, help="e.g. https://yourschool.instructure.com")
     p_send.add_argument("--course-id", required=True, type=int)
     p_send.add_argument(
-        "--peer-review-assignment-name",
+        "--peer-review-assignment-id",
         required=True,
-        help='Name of the Canvas assignment reviewers should submit their write-up to, e.g. "Peer Review"',
+        type=int,
+        help='Canvas assignment ID reviewers will submit their write-up to, e.g. the "Peer Review" assignment',
     )
     p_send.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
-    p_send.add_argument("--live", action="store_true", help="Actually send (default is dry run)")
+    p_send.add_argument("--live", action="store_true", help="Actually post (default is dry run)")
     p_send.set_defaults(func=_cmd_send_packets)
 
     p_fwd = sub.add_parser(
         "forward-reviews",
-        help="Pull each reviewer's submitted write-up from Canvas and message it to the reviewee.",
+        help="Pull each reviewer's submitted write-up and comment it onto the reviewee's own submission.",
     )
     p_fwd.add_argument("--assignments", required=True, help="assignments.csv produced by 'match'")
     p_fwd.add_argument("--canvas-url", required=True, help="e.g. https://yourschool.instructure.com")
@@ -130,7 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Canvas assignment ID that reviewers submitted their write-ups to",
     )
     p_fwd.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
-    p_fwd.add_argument("--live", action="store_true", help="Actually send (default is dry run)")
+    p_fwd.add_argument("--live", action="store_true", help="Actually post (default is dry run)")
     p_fwd.set_defaults(func=_cmd_forward_reviews)
 
     return parser
