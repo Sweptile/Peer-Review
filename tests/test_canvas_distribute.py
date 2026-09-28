@@ -217,11 +217,43 @@ def test_forward_reviews_skips_no_text_body(tmp_path, patch_canvas):
     )
 
     assert not results[0].ok
-    assert "no text body" in results[0].detail
+    assert "Peer Review" in results[0].detail
+
+
+def test_forward_reviews_skips_submission_missing_peer_review_marker(tmp_path, patch_canvas):
+    # A submission with prose but no "Peer Review:" header at all -- the
+    # old whole-body-forwarding behavior would have sent this; the parser
+    # should refuse rather than guess.
+    submissions = {1: SimpleNamespace(workflow_state="submitted", body="Great work, nice tests!")}
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
+    patch_canvas["canvas"] = canvas
+
+    assignments_csv = write_assignments_csv(
+        tmp_path,
+        [["Ada Lovelace", "ada@school.edu", "ada.pdf", "Alan Turing", "alan@school.edu", "alan.pdf"]],
+    )
+
+    results = cd.forward_reviews(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignments_csv=assignments_csv,
+        live=False,
+    )
+
+    assert not results[0].ok
+    assert "Peer Review" in results[0].detail
+
+
+COMBINED_BODY = (
+    "Self Assessment:\nI think I nailed the edge cases.\n\n"
+    "Peer Review:\nGreat work, nice tests!"
+)
 
 
 def test_forward_reviews_dry_run_reports_would_post(tmp_path, patch_canvas):
-    submissions = {1: SimpleNamespace(workflow_state="submitted", body="Great work, nice tests!")}
+    submissions = {1: SimpleNamespace(workflow_state="submitted", body=COMBINED_BODY)}
     canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
 
@@ -246,7 +278,7 @@ def test_forward_reviews_dry_run_reports_would_post(tmp_path, patch_canvas):
 
 
 def test_forward_reviews_live_comments_reviewers_text_onto_reviewees_own_submission(tmp_path, patch_canvas):
-    submissions = {1: SimpleNamespace(workflow_state="submitted", body="Great work, nice tests!")}
+    submissions = {1: SimpleNamespace(workflow_state="submitted", body=COMBINED_BODY)}
     canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
 
@@ -269,5 +301,8 @@ def test_forward_reviews_live_comments_reviewers_text_onto_reviewees_own_submiss
     alan_submission = subs[2]
     alan_submission.edit.assert_called_once()
     _, kwargs = alan_submission.edit.call_args
-    assert "Ada Lovelace" in kwargs["comment"]["text_comment"]
-    assert "Great work, nice tests!" in kwargs["comment"]["text_comment"]
+    text = kwargs["comment"]["text_comment"]
+    assert "Ada Lovelace" in text
+    assert "Great work, nice tests!" in text
+    # The self-assessment half must never reach the reviewee.
+    assert "nailed the edge cases" not in text

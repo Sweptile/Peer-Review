@@ -5,8 +5,9 @@ straight into Gradescope, so Canvas never holds the submitted file --
 Canvas's native "Require Peer Reviews" feature has nothing to hand
 out, and Gradescope has no student-facing peer-grading mode at all.
 This module is the workaround, built around one real Canvas assignment
-you create (e.g. "Peer Review") where students type their review of
-their assigned peer's work.
+you create (e.g. "Peer Review") where each student submits ONE
+text-entry response covering two things: a self-assessment of their
+own work, and their review of their assigned peer's work.
 
 Both legs of the loop post *private submission comments* on that same
 "Peer Review" assignment -- visible only to the student and you, right
@@ -15,14 +16,17 @@ on the page they already go to submit, no separate inbox to check:
   1. send-packets    -- before a reviewer has submitted anything, they
      get a comment on their own (still-empty) "Peer Review" submission
      with their own file and their assigned peer's file attached, plus
-     a note on who they're reviewing.
+     a note on who they're reviewing and the required "Self
+     Assessment: / Peer Review:" format.
 
-  2. forward-reviews -- once reviewers have submitted their write-ups,
-     each *reviewee* gets a comment on THEIR OWN "Peer Review"
-     submission containing the text their reviewer wrote about their
-     work. (Every student is both a reviewer and a reviewee under the
-     matching this project generates, so they already have their own
-     submission there to comment on.)
+  2. forward-reviews -- once reviewers have submitted their combined
+     write-ups, each *reviewee* gets a comment on THEIR OWN "Peer
+     Review" submission containing just the "Peer Review:" section
+     their reviewer wrote about them (see review_parsing.py -- the
+     self-assessment half is never forwarded). (Every student is both
+     a reviewer and a reviewee under the matching this project
+     generates, so they already have their own submission there to
+     comment on.)
 
 Grading the review itself needs no extra tooling from this project at
 all: once reviews are real submissions on a real Canvas assignment,
@@ -41,6 +45,8 @@ import csv
 from dataclasses import dataclass
 
 from canvasapi import Canvas
+
+from .review_parsing import extract_peer_review_section
 
 
 @dataclass
@@ -110,8 +116,13 @@ def send_packets(
             continue
 
         note = (
-            f"You're assigned to review {row['peer_name']}'s submission (attached), "
-            f"alongside your own submission (also attached) for comparison."
+            f"You're assigned to grade your own submission (attached) and "
+            f"{row['peer_name']}'s submission (also attached). Submit ONE response to this "
+            f"assignment with two sections, using exactly these headers on their own line:\n\n"
+            f"Self Assessment:\n<your assessment of your own work>\n\n"
+            f"Peer Review:\n<your review of {row['peer_name']}'s work>\n\n"
+            f"Only the text under \"Peer Review:\" will be shared with {row['peer_name']} -- "
+            f"keep your self-assessment separate from it."
         )
         attachments = [row["reviewer_submission_file"], row["peer_submission_file"]]
 
@@ -173,14 +184,15 @@ def forward_reviews(
             )
             continue
 
-        review_text = getattr(reviewer_submission, "body", None)
+        review_text = extract_peer_review_section(getattr(reviewer_submission, "body", None))
         if not review_text:
             results.append(
                 ActionResult(
                     reviewee_email,
                     False,
-                    f"{row['reviewer_name']}'s submission has no text body (likely a file upload) -- "
-                    "forward it to the reviewee manually",
+                    f"Couldn't find a clearly-marked \"Peer Review:\" section in "
+                    f"{row['reviewer_name']}'s submission (missing, empty, or the header "
+                    "appears more than once) -- check it and forward manually",
                 )
             )
             continue

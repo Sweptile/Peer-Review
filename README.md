@@ -5,8 +5,10 @@ via Canvas → Gradescope (an LTI "External Tool" launch, so the actual
 file only ever lives on Gradescope) and you grade the real submission
 on Gradescope yourself. This tool handles the part neither platform
 does out of the box: pairing every student with exactly one peer to
-review, and getting that peer's work — and later, the written review
-itself — in front of the right people.
+review, getting that peer's work in front of them, and — since each
+student grades both their own work and their peer's — getting the
+peer-review half of what they write back in front of the person it's
+about.
 
 ## Why not just use Canvas's built-in peer review feature?
 
@@ -55,6 +57,31 @@ assignment is necessarily a mutual pair, which you asked to avoid, so
 that case raises a clear error instead of silently allowing a mutual
 pair or looping forever.
 
+## What students actually submit
+
+Each student submits ONE text-entry response to the "Peer Review"
+Canvas assignment, covering both grading tasks, with two literal
+section headers each on their own line:
+
+```
+Self Assessment:
+<their assessment of their own work>
+
+Peer Review:
+<their review of their assigned peer's work>
+```
+
+Order doesn't matter, but the headers must appear exactly (case and
+spacing are flexible — "PEER REVIEW:" and "Peer   Review :" both
+match). Only the text under "Peer Review:" is ever forwarded to the
+peer; the self-assessment stays between the student and you.
+`send-packets` includes this exact instruction in the comment it
+posts, but it's worth also putting it in the assignment's own
+description in Canvas, since that's the more durable, visible place —
+see `peer_review/review_parsing.py` for the parsing contract this
+depends on, and why it refuses to guess (rather than forward the wrong
+thing) when a submission doesn't follow it.
+
 ## The full workflow
 
 ```
@@ -67,18 +94,24 @@ Gradescope (submissions)         Canvas (roster + delivery + grading)
                                         → each reviewer gets a private comment
                                           on their own (still-empty) "Peer
                                           Review" submission: their own file +
-                                          their assigned peer's file attached
+                                          their assigned peer's file attached,
+                                          plus the Self Assessment / Peer
+                                          Review format instructions
 
-                                   4. Students write their review as a normal
-                                        Canvas submission (text entry) to that
-                                        "Peer Review" assignment
+                                   4. Students submit ONE combined write-up
+                                        (self-assessment + peer review, per
+                                        the format above) to that "Peer
+                                        Review" assignment
 
                                    5. peer_review forward-reviews
-                                        → pulls each reviewer's submitted text
-                                          and comments it onto the reviewee's
-                                          OWN "Peer Review" submission, so they
-                                          see what was said about their work
-                                          right next to their own review
+                                        → pulls just the "Peer Review:"
+                                          section out of each reviewer's
+                                          submission and comments it onto the
+                                          reviewee's OWN "Peer Review"
+                                          submission, so they see what was
+                                          said about their work right next to
+                                          their own review — their reviewer's
+                                          self-assessment is never included
 
                                    6. You grade the "Peer Review" assignment
                                         in SpeedGrader like any other Canvas
@@ -146,8 +179,10 @@ their review yet.)
 ### Step 4 — students write their reviews
 
 Students open the "Peer Review" assignment, see the comment with their
-own file and their peer's file attached, and submit their write-up as
-a normal Canvas text-entry submission. No extra tooling needed here.
+own file and their peer's file attached, and submit their combined
+self-assessment + peer review as a normal Canvas text-entry
+submission, following the `Self Assessment:` / `Peer Review:` format
+above. No extra tooling needed here.
 
 ### Step 5 — forward reviews to reviewees
 
@@ -162,9 +197,11 @@ python -m peer_review.cli forward-reviews \
 ```
 
 Also dry-run by default; add `--live` to post. Reviewers who haven't
-submitted yet, or whose submission has no text body (e.g. a stray file
-upload instead of text entry), are reported individually rather than
-silently skipped, so you can chase down stragglers.
+submitted yet, or whose submission doesn't contain a clean, unambiguous
+"Peer Review:" section (missing, empty, or the header appears more
+than once), are reported individually rather than silently skipped or
+guessed at, so you can chase down stragglers and check their
+submission by hand.
 
 The forwarded review is posted on the *reviewee's own* "Peer Review"
 submission, not the reviewer's — this relies on the reviewee already
@@ -184,8 +221,12 @@ pytest
 ```
 
 `tests/test_matching.py` covers the matching algorithm directly (no
-network). `tests/test_canvas_distribute.py` exercises the Canvas
-delivery logic (roster matching, dry-run/live gating, unsubmitted /
-no-text-body handling) against a mocked Canvas client — it checks the
-logic is right, not that the live Canvas API calls are; that can only
-be confirmed against a real Canvas instance.
+network). `tests/test_review_parsing.py` covers the Self Assessment /
+Peer Review section splitter against Canvas's actual HTML-wrapped
+submission format, including the adversarial cases (missing header,
+duplicated header, HTML entities). `tests/test_canvas_distribute.py`
+exercises the Canvas delivery logic (roster matching, dry-run/live
+gating, unsubmitted/unparseable-submission handling) against a mocked
+Canvas client — it checks the logic is right, not that the live Canvas
+API calls are; that can only be confirmed against a real Canvas
+instance.
