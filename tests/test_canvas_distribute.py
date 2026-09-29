@@ -4,10 +4,10 @@ These don't hit the network -- they fake out just enough of the
 canvasapi surface (get_course, get_users, get_assignment,
 get_submission, submission.edit, submission.upload_comment) to prove
 the *logic* is right: roster-email matching, dry-run vs --live gating,
-and the unsubmitted/no-text-body skip paths. Whether the real
-canvasapi calls are wired up correctly can only be confirmed against a
-live Canvas instance, which this repo intentionally never touches on
-its own.
+and the unsubmitted/unparseable-submission skip paths. Whether the
+real canvasapi calls are wired up correctly can only be confirmed
+against a live Canvas instance, which this repo intentionally never
+touches on its own.
 """
 
 from __future__ import annotations
@@ -20,6 +20,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from peer_review import canvas_distribute as cd
+from peer_review.rubric import RubricItem
+
+RUBRIC = [
+    RubricItem(question="Q1", label="Correctness", max_points="10"),
+    RubricItem(question="Q2", label="Code Style", max_points="5"),
+]
 
 
 def make_user(uid, name, email):
@@ -119,12 +125,16 @@ def test_send_packets_dry_run_does_not_touch_submission(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=False,
     )
 
     assert len(results) == 1
     assert results[0].ok
     assert "DRY RUN" in results[0].detail
+    # The rubric template for both sections must be in what's shown.
+    assert "Q1 - Correctness (out of 10):" in results[0].detail
+    assert "Q2 - Code Style (out of 5):" in results[0].detail
     assignment.get_submission.assert_not_called()
 
 
@@ -148,6 +158,7 @@ def test_send_packets_live_comments_on_reviewers_own_submission_identities_visib
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=True,
         anonymous=False,
     )
@@ -157,7 +168,10 @@ def test_send_packets_live_comments_on_reviewers_own_submission_identities_visib
     ada_submission = subs[1]
     ada_submission.edit.assert_called_once()
     _, kwargs = ada_submission.edit.call_args
-    assert "Alan Turing" in kwargs["comment"]["text_comment"]
+    text = kwargs["comment"]["text_comment"]
+    assert "Alan Turing" in text
+    assert "Q1 - Correctness (out of 10):" in text
+    assert "Q2 - Code Style (out of 5):" in text
     assert ada_submission.upload_comment.call_count == 2
     ada_submission.upload_comment.assert_any_call(reviewer_file)
     ada_submission.upload_comment.assert_any_call(peer_file)
@@ -184,6 +198,7 @@ def test_send_packets_default_is_anonymous(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=True,
     )
 
@@ -213,6 +228,7 @@ def test_send_packets_reports_unmatched_email(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=False,
     )
 
@@ -235,6 +251,7 @@ def test_forward_reviews_skips_unsubmitted(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=False,
     )
 
@@ -242,7 +259,7 @@ def test_forward_reviews_skips_unsubmitted(tmp_path, patch_canvas):
     assert "hasn't submitted" in results[0].detail
 
 
-def test_forward_reviews_skips_no_text_body(tmp_path, patch_canvas):
+def test_forward_reviews_skips_empty_submission(tmp_path, patch_canvas):
     submissions = {1: SimpleNamespace(workflow_state="submitted", body=None)}
     canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
@@ -258,17 +275,17 @@ def test_forward_reviews_skips_no_text_body(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=False,
     )
 
     assert not results[0].ok
-    assert "Peer Review" in results[0].detail
+    assert "Couldn't parse" in results[0].detail
 
 
-def test_forward_reviews_skips_submission_missing_peer_review_marker(tmp_path, patch_canvas):
-    # A submission with prose but no "Peer Review:" header at all -- the
-    # old whole-body-forwarding behavior would have sent this; the parser
-    # should refuse rather than guess.
+def test_forward_reviews_skips_unparseable_submission(tmp_path, patch_canvas):
+    # Prose with no rubric headers at all -- the parser should refuse
+    # rather than guess which score belongs to which question.
     submissions = {1: SimpleNamespace(workflow_state="submitted", body="Great work, nice tests!")}
     canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
@@ -284,17 +301,32 @@ def test_forward_reviews_skips_submission_missing_peer_review_marker(tmp_path, p
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=False,
     )
 
     assert not results[0].ok
+    assert "Couldn't parse" in results[0].detail
     assert "Peer Review" in results[0].detail
 
 
-COMBINED_BODY = (
-    "Self Assessment:\nI think I nailed the edge cases.\n\n"
-    "Peer Review:\nGreat work, nice tests!"
-)
+def make_combined_body(
+    self_q1="9 - I think I nailed the edge cases.",
+    self_q2="4 - could be tidier.",
+    peer_q1="8 - great structure.",
+    peer_q2="5 - very clean.",
+):
+    return (
+        "Self Assessment:\n"
+        f"Q1 - Correctness (out of 10):\n{self_q1}\n\n"
+        f"Q2 - Code Style (out of 5):\n{self_q2}\n\n"
+        "Peer Review:\n"
+        f"Q1 - Correctness (out of 10):\n{peer_q1}\n\n"
+        f"Q2 - Code Style (out of 5):\n{peer_q2}\n"
+    )
+
+
+COMBINED_BODY = make_combined_body()
 
 
 def test_forward_reviews_dry_run_reports_would_post(tmp_path, patch_canvas):
@@ -313,6 +345,7 @@ def test_forward_reviews_dry_run_reports_would_post(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=False,
     )
 
@@ -338,6 +371,7 @@ def test_forward_reviews_live_comments_reviewers_text_identities_visible(tmp_pat
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=True,
         anonymous=False,
     )
@@ -349,9 +383,13 @@ def test_forward_reviews_live_comments_reviewers_text_identities_visible(tmp_pat
     _, kwargs = alan_submission.edit.call_args
     text = kwargs["comment"]["text_comment"]
     assert "Ada Lovelace" in text
-    assert "Great work, nice tests!" in text
+    assert "Q1 - Correctness (out of 10):" in text
+    assert "8 - great structure." in text
+    assert "Q2 - Code Style (out of 5):" in text
+    assert "5 - very clean." in text
     # The self-assessment half must never reach the reviewee.
     assert "nailed the edge cases" not in text
+    assert "could be tidier" not in text
 
 
 def test_forward_reviews_default_is_anonymous(tmp_path, patch_canvas):
@@ -371,6 +409,7 @@ def test_forward_reviews_default_is_anonymous(tmp_path, patch_canvas):
         course_id=1,
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
         live=True,
     )
 
@@ -379,5 +418,5 @@ def test_forward_reviews_default_is_anonymous(tmp_path, patch_canvas):
     _, kwargs = alan_submission.edit.call_args
     text = kwargs["comment"]["text_comment"]
     assert "Ada Lovelace" not in text
-    assert "Great work, nice tests!" in text
+    assert "8 - great structure." in text
     assert "nailed the edge cases" not in text

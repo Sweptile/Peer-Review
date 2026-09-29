@@ -1,0 +1,4 @@
+question,label,max_points
+Q1,Correctness,10
+Q2,Code Style,5
+Q3,Test Coverage,5

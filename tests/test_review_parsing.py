@@ -1,69 +1,143 @@
-from peer_review.review_parsing import extract_peer_review_section
+from peer_review.review_parsing import parse_peer_review
+from peer_review.rubric import RubricItem
+
+RUBRIC = [
+    RubricItem(question="Q1", label="Correctness", max_points="10"),
+    RubricItem(question="Q2", label="Code Style", max_points="5"),
+]
 
 
-def test_plain_text_peer_review_last():
-    body = "Self Assessment:\nI think I did well.\n\nPeer Review:\nGreat structure, needs more tests."
-    assert extract_peer_review_section(body) == "Great structure, needs more tests."
+def test_basic_two_question_extraction():
+    body = (
+        "Self Assessment:\n"
+        "Q1 - Correctness (out of 10):\n9 - I think I nailed it.\n\n"
+        "Q2 - Code Style (out of 5):\n4 - could be cleaner.\n\n"
+        "Peer Review:\n"
+        "Q1 - Correctness (out of 10):\n8 - great structure.\n\n"
+        "Q2 - Code Style (out of 5):\n5 - very clean.\n"
+    )
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "8 - great structure." in forward_text
+    assert "5 - very clean." in forward_text
+    # Self-assessment content must never leak into the forwarded text.
+    assert "nailed it" not in forward_text
+    assert "could be cleaner" not in forward_text
 
 
-def test_plain_text_peer_review_first():
-    body = "Peer Review:\nGreat structure, needs more tests.\n\nSelf Assessment:\nI think I did well."
-    assert extract_peer_review_section(body) == "Great structure, needs more tests."
+def test_reconstructed_headers_use_rubric_wording_not_students():
+    # Student writes sloppy/inconsistent headers; only the marker itself
+    # ("Q1:", case/space-insensitive) needs to match -- the reconstructed
+    # output should use the rubric's own canonical header text.
+    body = (
+        "Peer Review:\n"
+        "q1  :   correctness was fine\n8/10, solid work\n\n"
+        "Q2:\nstyle notes\n4/5, minor nitpicks\n"
+    )
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "Q1 - Correctness (out of 10):" in forward_text
+    assert "Q2 - Code Style (out of 5):" in forward_text
+    assert "8/10, solid work" in forward_text
+    assert "4/5, minor nitpicks" in forward_text
+
+
+def test_peer_review_section_can_come_before_self_assessment():
+    body = (
+        "Peer Review:\n"
+        "Q1 - Correctness (out of 10):\n8 - good.\n\n"
+        "Q2 - Code Style (out of 5):\n5 - clean.\n\n"
+        "Self Assessment:\n"
+        "Q1 - Correctness (out of 10):\n9 - proud of this.\n\n"
+        "Q2 - Code Style (out of 5):\n4 - okay.\n"
+    )
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "8 - good." in forward_text
+    assert "proud of this" not in forward_text
 
 
 def test_canvas_rich_text_html_wrapping():
     body = (
-        "<p><strong>Self Assessment:</strong></p>"
-        "<p>I think I did well overall.</p>"
         "<p><strong>Peer Review:</strong></p>"
-        "<p>Great structure, needs more tests.</p>"
-        "<p>Also consider edge cases.</p>"
+        "<p>Q1 - Correctness (out of 10):</p>"
+        "<p>8 - great structure.</p>"
+        "<p>Q2 - Code Style (out of 5):</p>"
+        "<p>5 - very clean.</p>"
     )
-    result = extract_peer_review_section(body)
-    assert "Great structure, needs more tests." in result
-    assert "Also consider edge cases." in result
-    assert "I think I did well" not in result
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "great structure" in forward_text
+    assert "very clean" in forward_text
 
 
 def test_html_entities_are_decoded():
-    body = "Peer Review:\nUses &amp; correctly, but &lt;script&gt; tags aren&#39;t escaped."
-    result = extract_peer_review_section(body)
-    assert result == "Uses & correctly, but <script> tags aren't escaped."
-
-
-def test_case_insensitive_and_flexible_spacing():
-    body = "PEER   REVIEW :\nLooks solid."
-    assert extract_peer_review_section(body) == "Looks solid."
-
-
-def test_missing_peer_review_marker_returns_none():
-    body = "Self Assessment:\nI think I did well.\n\nJust some other notes, no header for the rest."
-    assert extract_peer_review_section(body) is None
-
-
-def test_duplicate_peer_review_marker_is_ambiguous():
-    body = "Peer Review:\nFirst attempt.\n\nPeer Review:\nSecond attempt, ignore the first."
-    assert extract_peer_review_section(body) is None
-
-
-def test_duplicate_self_assessment_marker_is_ambiguous():
     body = (
-        "Self Assessment:\nFirst.\n\nSelf Assessment:\nSecond.\n\nPeer Review:\nMy actual review."
+        "Peer Review:\n"
+        "Q1 - Correctness (out of 10):\nUses &amp; correctly, isn&#39;t broken.\n\n"
+        "Q2 - Code Style (out of 5):\nFine.\n"
     )
-    assert extract_peer_review_section(body) is None
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "Uses & correctly, isn't broken." in forward_text
 
 
-def test_no_self_assessment_header_still_extracts_peer_review():
-    body = "Peer Review:\nGreat work overall, nice edge case handling."
-    assert extract_peer_review_section(body) == "Great work overall, nice edge case handling."
+def test_missing_peer_review_section_returns_error():
+    body = "Self Assessment:\nQ1 - Correctness (out of 10):\n9 - good.\nQ2 - Code Style (out of 5):\n4 - ok.\n"
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert forward_text is None
+    assert "Peer Review" in error
 
 
-def test_empty_peer_review_section_returns_none():
-    body = "Peer Review:\n\nSelf Assessment:\nI wrote my self-assessment but forgot the peer review."
-    assert extract_peer_review_section(body) is None
+def test_duplicate_peer_review_section_returns_error():
+    body = "Peer Review:\nfirst\n\nPeer Review:\nsecond"
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert forward_text is None
+    assert "Peer Review" in error
 
 
-def test_empty_body_returns_none():
-    assert extract_peer_review_section(None) is None
-    assert extract_peer_review_section("") is None
-    assert extract_peer_review_section("<p></p>") is None
+def test_missing_question_header_returns_error():
+    body = "Peer Review:\nQ1 - Correctness (out of 10):\n8 - good.\n"  # Q2 missing entirely
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert forward_text is None
+    assert "Q2" in error
+    assert "missing" in error
+
+
+def test_duplicate_question_header_returns_error():
+    body = (
+        "Peer Review:\n"
+        "Q1 - Correctness (out of 10):\nfirst answer\n\n"
+        "Q1 - Correctness (out of 10):\nsecond answer\n\n"
+        "Q2 - Code Style (out of 5):\nfine\n"
+    )
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert forward_text is None
+    assert "Q1" in error
+    assert "more than once" in error
+
+
+def test_empty_answer_returns_error():
+    body = "Peer Review:\nQ1 - Correctness (out of 10):\n\nQ2 - Code Style (out of 5):\nfine\n"
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert forward_text is None
+    assert "Q1" in error
+    assert "no answer" in error
+
+
+def test_empty_body_returns_error():
+    forward_text, error = parse_peer_review(None, RUBRIC)
+    assert forward_text is None
+    assert error is not None
+
+    forward_text, error = parse_peer_review("", RUBRIC)
+    assert forward_text is None
+    assert error is not None
+
+
+def test_single_question_rubric():
+    single = [RubricItem(question="Q1", label="Overall", max_points="20")]
+    body = "Peer Review:\nQ1 - Overall (out of 20):\n18 - excellent.\n"
+    forward_text, error = parse_peer_review(body, single)
+    assert error is None
+    assert forward_text == "Q1 - Overall (out of 20):\n18 - excellent."

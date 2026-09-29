@@ -57,30 +57,70 @@ assignment is necessarily a mutual pair, which you asked to avoid, so
 that case raises a clear error instead of silently allowing a mutual
 pair or looping forever.
 
-## What students actually submit
+## The rubric, and what students actually submit
 
-Each student submits ONE text-entry response to the "Peer Review"
-Canvas assignment, covering both grading tasks, with two literal
-section headers each on their own line:
+Grading isn't a one-line verdict — it's per question, against a rubric
+you define once as `rubric.csv`:
+
+```
+question,label,max_points
+Q1,Correctness,10
+Q2,Code Style,5
+Q3,Test Coverage,5
+```
+
+(`max_points` is display-only, purely for the header text students
+see — nothing in this tool does arithmetic with it. `question` is the
+literal marker a student must type, e.g. `Q1`; keep those short and
+fixed rather than asking students to retype a full criterion name, so
+a paraphrase or typo doesn't break parsing.)
+
+From that rubric, `send-packets` generates the exact template each
+student must fill in, and posts it as part of the packet comment: ONE
+text-entry submission to the "Peer Review" Canvas assignment, with two
+literal section headers, each followed by one labeled block per rubric
+question:
 
 ```
 Self Assessment:
-<their assessment of their own work>
+Q1 - Correctness (out of 10):
+<score and justification>
+
+Q2 - Code Style (out of 5):
+<score and justification>
+
+Q3 - Test Coverage (out of 5):
+<score and justification>
 
 Peer Review:
-<their review of their assigned peer's work>
+Q1 - Correctness (out of 10):
+<score and justification>
+
+Q2 - Code Style (out of 5):
+<score and justification>
+
+Q3 - Test Coverage (out of 5):
+<score and justification>
 ```
 
-Order doesn't matter, but the headers must appear exactly (case and
-spacing are flexible — "PEER REVIEW:" and "Peer   Review :" both
-match). Only the text under "Peer Review:" is ever forwarded to the
-peer; the self-assessment stays between the student and you.
-`send-packets` includes this exact instruction in the comment it
-posts, but it's worth also putting it in the assignment's own
-description in Canvas, since that's the more durable, visible place —
-see `peer_review/review_parsing.py` for the parsing contract this
-depends on, and why it refuses to guess (rather than forward the wrong
-thing) when a submission doesn't follow it.
+Order of the two top-level sections doesn't matter, and header
+matching is forgiving of case/spacing/extra wording around each
+question id (`q1 :`, `Q1 - whatever :`, and `Q1 - Correctness (out of
+10):` all match) — but every rubric question needs its own
+unambiguous marker, exactly once, in each section. Only the *Peer
+Review* half is ever forwarded to the peer, reconstructed using the
+rubric's own header wording (not whatever the student actually typed)
+so the reviewee always sees a consistent format regardless of how the
+reviewer phrased their headers; the self-assessment half stays between
+the student and you. `send-packets` includes this exact template in
+the comment it posts, but it's worth also pasting the same rubric
+instructions into the assignment's own description in Canvas, since
+that's the more durable, visible place — see
+`peer_review/rubric.py` for how the template is generated and
+`peer_review/review_parsing.py` for the parsing contract, including
+why it refuses to guess (rather than forward or misattribute the wrong
+thing) whenever a section or a specific question's marker is missing,
+empty, or duplicated.
 
 ## Anonymity
 
@@ -135,18 +175,21 @@ Gradescope (submissions)         Canvas (roster + delivery + grading)
                                           on their own (still-empty) "Peer
                                           Review" submission: their own file +
                                           their assigned peer's file attached,
-                                          plus the Self Assessment / Peer
-                                          Review format instructions
+                                          plus the per-question rubric
+                                          template (from rubric.csv) to fill
+                                          in under Self Assessment / Peer
+                                          Review
 
                                    4. Students submit ONE combined write-up
-                                        (self-assessment + peer review, per
-                                        the format above) to that "Peer
-                                        Review" assignment
+                                        (self-assessment + per-question peer
+                                        review, per the rubric template) to
+                                        that "Peer Review" assignment
 
                                    5. peer_review forward-reviews
-                                        → pulls just the "Peer Review:"
-                                          section out of each reviewer's
-                                          submission and comments it onto the
+                                        → pulls each rubric question's answer
+                                          out of the "Peer Review:" section
+                                          and comments the reconstructed,
+                                          per-question feedback onto the
                                           reviewee's OWN "Peer Review"
                                           submission, so they see what was
                                           said about their work right next to
@@ -174,6 +217,9 @@ this tool touches that.
   `examples/roster.csv` for the format. (You can generate this from
   Canvas's own roster export/API if that's easier than typing it by
   hand — the tool only cares about the three columns.)
+- **Rubric**: build `rubric.csv` with columns `question,label,max_points`
+  — one row per question. See `examples/rubric.csv` and "The rubric,
+  and what students actually submit" above.
 
 ### Step 2 — generate the matching
 
@@ -205,7 +251,8 @@ python -m peer_review.cli send-packets \
   --assignments assignments.csv \
   --canvas-url https://yourschool.instructure.com \
   --course-id 12345 \
-  --peer-review-assignment-id 67890
+  --peer-review-assignment-id 67890 \
+  --rubric rubric.csv
 ```
 
 This **defaults to a dry run** — it resolves every reviewer's email
@@ -220,29 +267,33 @@ nobody's turned in their review yet.)
 ### Step 4 — students write their reviews
 
 Students open the "Peer Review" assignment, see the comment with their
-own file and their peer's file attached, and submit their combined
-self-assessment + peer review as a normal Canvas text-entry
-submission, following the `Self Assessment:` / `Peer Review:` format
-above. No extra tooling needed here.
+own file, their peer's file, and the per-question rubric template
+attached, and submit their combined self-assessment + peer review as a
+normal Canvas text-entry submission, filling in every question under
+both headers. No extra tooling needed here.
 
 ### Step 5 — forward reviews to reviewees
 
-Once reviews are in:
+Once reviews are in, using the **same** rubric file as step 3 (a
+mismatched rubric will make parsing fail, since the question markers
+it looks for come from this file):
 
 ```
 python -m peer_review.cli forward-reviews \
   --assignments assignments.csv \
   --canvas-url https://yourschool.instructure.com \
   --course-id 12345 \
-  --peer-review-assignment-id 67890
+  --peer-review-assignment-id 67890 \
+  --rubric rubric.csv
 ```
 
 Also dry-run by default; add `--live` to post. Reviewers who haven't
 submitted yet, or whose submission doesn't contain a clean, unambiguous
-"Peer Review:" section (missing, empty, or the header appears more
-than once), are reported individually rather than silently skipped or
-guessed at, so you can chase down stragglers and check their
-submission by hand.
+answer for *every* rubric question in the "Peer Review:" section
+(a question's marker missing, duplicated, or its answer left blank),
+are reported individually with the specific reason rather than
+silently skipped or guessed at, so you can chase down stragglers and
+check their submission by hand.
 
 The forwarded review is posted on the *reviewee's own* "Peer Review"
 submission, not the reviewer's — this relies on the reviewee already
@@ -262,12 +313,14 @@ pytest
 ```
 
 `tests/test_matching.py` covers the matching algorithm directly (no
-network). `tests/test_review_parsing.py` covers the Self Assessment /
-Peer Review section splitter against Canvas's actual HTML-wrapped
-submission format, including the adversarial cases (missing header,
-duplicated header, HTML entities). `tests/test_canvas_distribute.py`
-exercises the Canvas delivery logic (roster matching, dry-run/live
-gating, unsubmitted/unparseable-submission handling) against a mocked
-Canvas client — it checks the logic is right, not that the live Canvas
-API calls are; that can only be confirmed against a real Canvas
-instance.
+network). `tests/test_rubric.py` covers loading a rubric CSV and
+generating its template. `tests/test_review_parsing.py` covers pulling
+per-question answers out of a submission against Canvas's actual
+HTML-wrapped format, including the adversarial cases (missing
+section, missing/duplicated question marker, empty answer, HTML
+entities). `tests/test_anonymize.py` covers PDF metadata stripping.
+`tests/test_canvas_distribute.py` exercises the Canvas delivery logic
+(roster matching, dry-run/live gating, unsubmitted/unparseable-submission
+handling) against a mocked Canvas client — it checks the logic is
+right, not that the live Canvas API calls are; that can only be
+confirmed against a real Canvas instance.

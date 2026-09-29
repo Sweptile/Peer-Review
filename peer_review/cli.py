@@ -47,9 +47,16 @@ def _report(results, *, live: bool, verb: str) -> int:
 
 def _cmd_send_packets(args: argparse.Namespace) -> int:
     from . import canvas_distribute
+    from .rubric import read_rubric_csv
 
     token = _require_token(args)
     if not token:
+        return 1
+
+    try:
+        rubric_items = read_rubric_csv(args.rubric)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     results = canvas_distribute.send_packets(
@@ -58,6 +65,7 @@ def _cmd_send_packets(args: argparse.Namespace) -> int:
         course_id=args.course_id,
         peer_review_assignment_id=args.peer_review_assignment_id,
         assignments_csv=args.assignments,
+        rubric_items=rubric_items,
         live=args.live,
         anonymous=args.anonymous,
     )
@@ -66,9 +74,16 @@ def _cmd_send_packets(args: argparse.Namespace) -> int:
 
 def _cmd_forward_reviews(args: argparse.Namespace) -> int:
     from . import canvas_distribute
+    from .rubric import read_rubric_csv
 
     token = _require_token(args)
     if not token:
+        return 1
+
+    try:
+        rubric_items = read_rubric_csv(args.rubric)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     results = canvas_distribute.forward_reviews(
@@ -77,6 +92,7 @@ def _cmd_forward_reviews(args: argparse.Namespace) -> int:
         course_id=args.course_id,
         peer_review_assignment_id=args.peer_review_assignment_id,
         assignments_csv=args.assignments,
+        rubric_items=rubric_items,
         live=args.live,
         anonymous=args.anonymous,
     )
@@ -115,6 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help='Canvas assignment ID reviewers will submit their write-up to, e.g. the "Peer Review" assignment',
     )
+    p_send.add_argument(
+        "--rubric",
+        required=True,
+        help="CSV with columns: question,label[,max_points] -- e.g. examples/rubric.csv",
+    )
     p_send.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
     p_send.add_argument("--live", action="store_true", help="Actually post (default is dry run)")
     p_send.add_argument(
@@ -138,6 +159,11 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         type=int,
         help="Canvas assignment ID that reviewers submitted their write-ups to",
+    )
+    p_fwd.add_argument(
+        "--rubric",
+        required=True,
+        help="Same rubric CSV used with send-packets -- must match, or parsing will fail",
     )
     p_fwd.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
     p_fwd.add_argument("--live", action="store_true", help="Actually post (default is dry run)")

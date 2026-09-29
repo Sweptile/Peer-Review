@@ -9,6 +9,12 @@ you create (e.g. "Peer Review") where each student submits ONE
 text-entry response covering two things: a self-assessment of their
 own work, and their review of their assigned peer's work.
 
+Grading isn't one free-form paragraph -- it's per-question, against a
+rubric (see rubric.py): each of the two halves (self-assessment, peer
+review) is broken into one labeled block per rubric question, and
+review_parsing.py parses those out individually rather than treating
+either half as an opaque blob.
+
 Both legs of the loop post *private submission comments* on that same
 "Peer Review" assignment -- visible only to the student and you, right
 on the page they already go to submit, no separate inbox to check:
@@ -16,17 +22,17 @@ on the page they already go to submit, no separate inbox to check:
   1. send-packets    -- before a reviewer has submitted anything, they
      get a comment on their own (still-empty) "Peer Review" submission
      with their own file and their assigned peer's file attached, plus
-     a note on who they're reviewing and the required "Self
-     Assessment: / Peer Review:" format.
+     the exact per-question template (generated from the rubric) they
+     need to fill in under "Self Assessment:" and "Peer Review:".
 
   2. forward-reviews -- once reviewers have submitted their combined
      write-ups, each *reviewee* gets a comment on THEIR OWN "Peer
-     Review" submission containing just the "Peer Review:" section
-     their reviewer wrote about them (see review_parsing.py -- the
-     self-assessment half is never forwarded). (Every student is both
-     a reviewer and a reviewee under the matching this project
-     generates, so they already have their own submission there to
-     comment on.)
+     Review" submission containing just the per-question answers from
+     the "Peer Review:" section their reviewer wrote about them,
+     reconstructed using the rubric's own headers (the self-assessment
+     half is never forwarded). (Every student is both a reviewer and a
+     reviewee under the matching this project generates, so they
+     already have their own submission there to comment on.)
 
 Grading the review itself needs no extra tooling from this project at
 all: once reviews are real submissions on a real Canvas assignment,
@@ -58,7 +64,8 @@ from pathlib import Path
 from canvasapi import Canvas
 
 from .anonymize import anonymize_copy
-from .review_parsing import extract_peer_review_section
+from .review_parsing import parse_peer_review
+from .rubric import RubricItem, template_for
 
 
 @dataclass
@@ -110,6 +117,7 @@ def send_packets(
     course_id: int,
     peer_review_assignment_id: int,
     assignments_csv: str,
+    rubric_items: list[RubricItem],
     live: bool = False,
     anonymous: bool = True,
 ) -> list[ActionResult]:
@@ -119,6 +127,7 @@ def send_packets(
     course = canvas.get_course(course_id)
     assignment = course.get_assignment(peer_review_assignment_id)
     roster = _roster_by_email(course)
+    rubric_template = template_for(rubric_items)
 
     results: list[ActionResult] = []
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -140,11 +149,11 @@ def send_packets(
             if anonymous:
                 note = (
                     "You're assigned to grade your own submission (attached) and an "
-                    "anonymous peer's submission (also attached). Submit ONE response to "
-                    "this assignment with two sections, using exactly these headers on "
-                    "their own line:\n\n"
-                    "Self Assessment:\n<your assessment of your own work>\n\n"
-                    "Peer Review:\n<your review of your peer's work>\n\n"
+                    "anonymous peer's submission (also attached), against the rubric below. "
+                    "Submit ONE response to this assignment with two sections, using exactly "
+                    "these headers on their own line, and answer every question under both:\n\n"
+                    f"Self Assessment:\n{rubric_template}\n\n"
+                    f"Peer Review:\n{rubric_template}\n\n"
                     "Only the text under \"Peer Review:\" will be shared with your peer -- "
                     "keep your self-assessment separate from it, and don't put your name "
                     "anywhere in your review (your peer won't be told who wrote it)."
@@ -152,10 +161,11 @@ def send_packets(
             else:
                 note = (
                     f"You're assigned to grade your own submission (attached) and "
-                    f"{row['peer_name']}'s submission (also attached). Submit ONE response to this "
-                    f"assignment with two sections, using exactly these headers on their own line:\n\n"
-                    f"Self Assessment:\n<your assessment of your own work>\n\n"
-                    f"Peer Review:\n<your review of {row['peer_name']}'s work>\n\n"
+                    f"{row['peer_name']}'s submission (also attached), against the rubric below. "
+                    f"Submit ONE response to this assignment with two sections, using exactly "
+                    f"these headers on their own line, and answer every question under both:\n\n"
+                    f"Self Assessment:\n{rubric_template}\n\n"
+                    f"Peer Review:\n{rubric_template}\n\n"
                     f"Only the text under \"Peer Review:\" will be shared with {row['peer_name']} -- "
                     f"keep your self-assessment separate from it."
                 )
@@ -189,6 +199,7 @@ def forward_reviews(
     course_id: int,
     peer_review_assignment_id: int,
     assignments_csv: str,
+    rubric_items: list[RubricItem],
     live: bool = False,
     anonymous: bool = True,
 ) -> list[ActionResult]:
@@ -220,15 +231,14 @@ def forward_reviews(
             )
             continue
 
-        review_text = extract_peer_review_section(getattr(reviewer_submission, "body", None))
-        if not review_text:
+        review_text, parse_error = parse_peer_review(getattr(reviewer_submission, "body", None), rubric_items)
+        if review_text is None:
             results.append(
                 ActionResult(
                     reviewee_email,
                     False,
-                    f"Couldn't find a clearly-marked \"Peer Review:\" section in "
-                    f"{row['reviewer_name']}'s submission (missing, empty, or the header "
-                    "appears more than once) -- check it and forward manually",
+                    f"Couldn't parse {row['reviewer_name']}'s peer review ({parse_error}) -- "
+                    "check it and forward manually",
                 )
             )
             continue
