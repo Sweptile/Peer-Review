@@ -103,11 +103,42 @@ def _roster_by_email(course) -> dict:
     return roster
 
 
+def _upload_attachment(submission, path: str) -> int:
+    """Uploads a file as a submission-comment attachment and returns its file id,
+    without posting a comment yet. submission.upload_comment() does both in one
+    call, which is exactly what we don't want here -- see _post_comment."""
+    from canvasapi.upload import Uploader
+
+    url = "courses/{}/assignments/{}/submissions/{}/comments/files".format(
+        submission.course_id, submission.assignment_id, submission.user_id
+    )
+    with open(path, "rb") as f:
+        ok, response = Uploader(submission._requester, url, f).start()
+    if not ok:
+        raise RuntimeError(f"Upload failed for {path}: {response}")
+    return response["id"]
+
+
 def _post_comment(submission, *, text: str | None, attachment_paths: list[str]) -> None:
+    """Posts text and attachments as ONE atomic comment, not one Canvas call per piece.
+
+    If any attachment upload fails partway through -- e.g. a network policy
+    blocks Canvas's file-storage host but not its main API host, which is
+    exactly the kind of split failure Canvas's own architecture invites --
+    this raises before ever calling submission.edit(), so nothing gets
+    posted at all. The alternative (posting the text comment first, then
+    attachments one by one) leaves a text-only comment stranded with no
+    files and no obvious sign anything's missing, which is worse than a
+    clean failure a retry can redo from scratch.
+    """
+    file_ids = [_upload_attachment(submission, path) for path in attachment_paths]
+    comment: dict = {"group_comment": False}
     if text:
-        submission.edit(comment={"text_comment": text, "group_comment": False})
-    for path in attachment_paths:
-        submission.upload_comment(path)
+        comment["text_comment"] = text
+    if file_ids:
+        comment["file_ids"] = file_ids
+    if comment.keys() - {"group_comment"}:
+        submission.edit(comment=comment)
 
 
 def send_packets(
