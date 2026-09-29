@@ -481,3 +481,101 @@ def test_forward_reviews_default_is_anonymous(tmp_path, patch_canvas):
     assert "Ada Lovelace" not in text
     assert "8 - great structure." in text
     assert "nailed the edge cases" not in text
+
+
+def test_post_announcement_dry_run_does_not_post(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW1 - Peer Review",
+        rubric_items=RUBRIC,
+        due_text="Tuesday at midnight",
+        live=False,
+    )
+
+    assert result.ok
+    assert "DRY RUN" in result.detail
+    assert "HW1 - Peer Review" in result.detail
+    assert "Due Tuesday at midnight." in result.detail
+    assert "Q1" in result.detail and "Q2" in result.detail
+    course.create_discussion_topic.assert_not_called()
+
+
+def test_post_announcement_live_posts_generated_content(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+    course.create_discussion_topic.return_value = SimpleNamespace(
+        title="HW1 - Peer Review — Now Available",
+        html_url="https://fake/courses/1/discussion_topics/42",
+    )
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW1 - Peer Review",
+        rubric_items=RUBRIC,
+        due_text="Tuesday at midnight",
+        contact_line="Email me with questions.",
+        live=True,
+    )
+
+    assert result.ok
+    assert "discussion_topics/42" in result.detail
+
+    _, kwargs = course.create_discussion_topic.call_args
+    assert kwargs["is_announcement"] is True
+    assert "HW1 - Peer Review" in kwargs["title"]
+    assert "Due Tuesday at midnight." in kwargs["message"]
+    assert "Email me with questions." in kwargs["message"]
+    assert "https://fake/courses/1/assignments/99" in kwargs["message"]
+    assert "Q1, Q2" in kwargs["message"]
+
+
+def test_post_announcement_reflects_rubric_question_count(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+
+    five_questions = [
+        RubricItem(question=f"Q{i}", label=f"Criterion {i}", max_points="2") for i in range(1, 6)
+    ]
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW2 - Peer Review",
+        rubric_items=five_questions,
+        due_text="Friday",
+        live=False,
+    )
+
+    assert "all 5 rubric" in result.detail
+    assert "Q1, Q2, Q3, Q4, Q5" in result.detail
+
+
+def test_post_announcement_handles_api_error(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+    course.create_discussion_topic.side_effect = RuntimeError("boom")
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW1 - Peer Review",
+        rubric_items=RUBRIC,
+        due_text="Tuesday at midnight",
+        live=True,
+    )
+
+    assert not result.ok
+    assert "Canvas API error" in result.detail

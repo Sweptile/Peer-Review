@@ -107,6 +107,37 @@ def _cmd_forward_reviews(args: argparse.Namespace) -> int:
     return _report(results, live=args.live, verb="reviewees commented on")
 
 
+def _cmd_announce(args: argparse.Namespace) -> int:
+    from . import canvas_distribute
+    from .rubric import read_rubric_csv
+
+    token = _require_token(args)
+    if not token:
+        return 1
+
+    try:
+        rubric_items = read_rubric_csv(args.rubric)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    result = canvas_distribute.post_announcement(
+        canvas_url=args.canvas_url,
+        token=token,
+        course_id=args.course_id,
+        peer_review_assignment_id=args.peer_review_assignment_id,
+        assignment_name=args.assignment_name,
+        rubric_items=rubric_items,
+        due_text=args.due,
+        contact_line=args.contact_line,
+        live=args.live,
+    )
+    print(result.detail)
+    if not args.live:
+        print("\nThis was a dry run -- nothing was posted. Re-run with --live to actually post it.")
+    return 0 if result.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="peer_review",
@@ -197,6 +228,43 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: on; use --no-anonymous for identities-visible mode)",
     )
     p_fwd.set_defaults(func=_cmd_forward_reviews)
+
+    p_announce = sub.add_parser(
+        "announce",
+        help="Post a course announcement pointing students at the Peer Review assignment.",
+    )
+    p_announce.add_argument("--canvas-url", required=True, help="e.g. https://yourschool.instructure.com")
+    p_announce.add_argument("--course-id", required=True, type=int)
+    p_announce.add_argument(
+        "--peer-review-assignment-id",
+        required=True,
+        type=int,
+        help="Canvas assignment ID to link students to",
+    )
+    p_announce.add_argument(
+        "--assignment-name",
+        required=True,
+        help='How to refer to the assignment in the announcement, e.g. "HW1 - Peer Review"',
+    )
+    p_announce.add_argument(
+        "--rubric",
+        required=True,
+        help="Same rubric CSV used with send-packets -- the announcement's question count and "
+        "list are generated from it",
+    )
+    p_announce.add_argument(
+        "--due",
+        required=True,
+        help='Free-text due date/time, e.g. "Tuesday at midnight" -- inserted as "Due <text>."',
+    )
+    p_announce.add_argument(
+        "--contact-line",
+        default="Email me if you have any questions.",
+        help='Closing line, default: "Email me if you have any questions."',
+    )
+    p_announce.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
+    p_announce.add_argument("--live", action="store_true", help="Actually post (default is dry run)")
+    p_announce.set_defaults(func=_cmd_announce)
 
     return parser
 
