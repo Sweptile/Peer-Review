@@ -11,6 +11,13 @@ def _cmd_match(args: argparse.Namespace) -> int:
     students = matching.read_roster_csv(args.roster)
     avoid_pairs = matching.read_pairs_csv(args.avoid_repeats) if args.avoid_repeats else []
 
+    if args.require_submission_file:
+        students, excluded = matching.split_by_submission(students)
+        if excluded:
+            print(f"Excluding {len(excluded)} student(s) with no submission_file:")
+            for s in excluded:
+                print(f"  - {s.name} <{s.email}>")
+
     try:
         assignments = matching.match_students(
             students, avoid_pairs=avoid_pairs, seed=args.seed
@@ -116,6 +123,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="CSV of prior pairs (e.g. a previous assignments.csv) that must not recur",
     )
     p_match.add_argument("--seed", type=int, default=None, help="Random seed, for reproducibility")
+    p_match.add_argument(
+        "--require-submission-file",
+        action="store_true",
+        help="Exclude students with a blank submission_file from the matching round "
+        "(there's nothing for them to review or hand out)",
+    )
     p_match.set_defaults(func=_cmd_match)
 
     p_send = sub.add_parser(
