@@ -157,6 +157,21 @@ def read_roster_csv(path: str) -> list[Student]:
     return students
 
 
+def split_by_submission(students: Sequence[Student]) -> tuple[list[Student], list[Student]]:
+    """Splits a roster into (has a submission_file, doesn't).
+
+    There's no point matching someone with no submission on file into
+    a peer-review round -- there's nothing for their assigned reviewer
+    to review, and nothing to hand them to review either. Returning
+    the excluded list rather than just dropping it silently is the
+    point: the caller should report who got left out by name, not bury
+    it in a smaller roster count.
+    """
+    included = [s for s in students if s.submission_file]
+    excluded = [s for s in students if not s.submission_file]
+    return included, excluded
+
+
 def write_assignments_csv(path: str, assignments: Sequence[Assignment]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)

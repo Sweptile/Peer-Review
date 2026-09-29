@@ -180,12 +180,20 @@ Gradescope (submissions)         Canvas (roster + delivery + grading)
                                           in under Self Assessment / Peer
                                           Review
 
-                                   4. Students submit ONE combined write-up
+                                   4. peer_review announce
+                                        → posts a course announcement pointing
+                                          students at the assignment and
+                                          explaining the format, generated
+                                          from the same rubric.csv so it can
+                                          never drift out of sync with what's
+                                          actually on the packet comment
+
+                                   5. Students submit ONE combined write-up
                                         (self-assessment + per-question peer
                                         review, per the rubric template) to
                                         that "Peer Review" assignment
 
-                                   5. peer_review forward-reviews
+                                   6. peer_review forward-reviews
                                         → pulls each rubric question's answer
                                           out of the "Peer Review:" section
                                           and comments the reconstructed,
@@ -196,7 +204,7 @@ Gradescope (submissions)         Canvas (roster + delivery + grading)
                                           their own review — their reviewer's
                                           self-assessment is never included
 
-                                   6. You grade the "Peer Review" assignment
+                                   7. You grade the "Peer Review" assignment
                                         in SpeedGrader like any other Canvas
                                         assignment — that's the "peer review
                                         score, in a different assignment"
@@ -264,7 +272,31 @@ on students' submissions. (Canvas allows comments on an assignment
 before a student has submitted to it, so this works even though
 nobody's turned in their review yet.)
 
-### Step 4 — students write their reviews
+### Step 4 — announce it
+
+Let students know the assignment is live and how to fill it in, using
+the **same** rubric file as step 3 so the question count/list in the
+announcement always matches what's actually on the packet comment:
+
+```
+python -m peer_review.cli announce \
+  --canvas-url https://yourschool.instructure.com \
+  --course-id 12345 \
+  --peer-review-assignment-id 67890 \
+  --assignment-name "HW1 - Peer Review" \
+  --rubric rubric.csv \
+  --due "Tuesday at midnight"
+```
+
+Also dry-run by default; add `--live` to actually post it as a course
+announcement. `--assignment-name` is just how it's referred to in the
+announcement text and link ("Go to the **HW1 - Peer Review**
+assignment"), `--due` is inserted verbatim as "Due \<text\>." (write it
+however you'd say it — free text, not a parsed date), and
+`--contact-line` overrides the default closing line ("Email me if you
+have any questions.") if you want something else.
+
+### Step 5 — students write their reviews
 
 Students open the "Peer Review" assignment, see the comment with their
 own file, their peer's file, and the per-question rubric template
@@ -272,7 +304,7 @@ attached, and submit their combined self-assessment + peer review as a
 normal Canvas text-entry submission, filling in every question under
 both headers. No extra tooling needed here.
 
-### Step 5 — forward reviews to reviewees
+### Step 6 — forward reviews to reviewees
 
 Once reviews are in, using the **same** rubric file as step 3 (a
 mismatched rubric will make parsing fail, since the question markers
@@ -301,7 +333,7 @@ having a submission object there themselves, which they do, because
 under this project's matching everyone is both a reviewer for one
 person and a reviewee for another.
 
-### Step 6 — grade the reviews
+### Step 7 — grade the reviews
 
 In Canvas SpeedGrader, on the "Peer Review" assignment, as usual.
 
@@ -318,9 +350,11 @@ generating its template. `tests/test_review_parsing.py` covers pulling
 per-question answers out of a submission against Canvas's actual
 HTML-wrapped format, including the adversarial cases (missing
 section, missing/duplicated question marker, empty answer, HTML
-entities). `tests/test_anonymize.py` covers PDF metadata stripping.
-`tests/test_canvas_distribute.py` exercises the Canvas delivery logic
-(roster matching, dry-run/live gating, unsubmitted/unparseable-submission
-handling) against a mocked Canvas client — it checks the logic is
-right, not that the live Canvas API calls are; that can only be
-confirmed against a real Canvas instance.
+entities). `tests/test_anonymize.py` covers PDF metadata and leading-page
+stripping. `tests/test_canvas_distribute.py` exercises the Canvas
+delivery logic (roster matching, dry-run/live gating,
+unsubmitted/unparseable-submission handling, the atomic
+text+attachments comment, and the generated announcement content)
+against a mocked Canvas client — it checks the logic is right, not
+that the live Canvas API calls are; that can only be confirmed against
+a real Canvas instance.

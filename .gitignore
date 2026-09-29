@@ -2,3 +2,15 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# Real class data -- never commit any of this. Even rubric.csv, which
+# carries no student PII, is excluded here: it's still specific to a
+# real course/assignment, and this repo should stay generic. Only the
+# examples/ fixtures (fake data) are meant to be tracked.
+/roster.csv
+/rubric.csv
+/assignments.csv
+/submissions/
+
+# Secrets -- never commit an API token.
+.env

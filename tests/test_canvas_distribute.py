@@ -102,6 +102,22 @@ def patch_canvas(monkeypatch):
     return holder
 
 
+@pytest.fixture(autouse=True)
+def patch_upload_attachment(monkeypatch):
+    """_upload_attachment talks to canvasapi's low-level Uploader, which
+    needs a real HTTP round trip -- not something to fake through several
+    layers of MagicMock. Patch it directly and record (submission, path)
+    calls so tests can assert on what would have been uploaded."""
+    calls = []
+
+    def fake_upload(submission, path):
+        calls.append((submission, path))
+        return len(calls)  # a fake but distinct file id per call
+
+    monkeypatch.setattr(cd, "_upload_attachment", fake_upload)
+    return calls
+
+
 def test_send_packets_dry_run_does_not_touch_submission(tmp_path, patch_canvas):
     canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
@@ -138,7 +154,9 @@ def test_send_packets_dry_run_does_not_touch_submission(tmp_path, patch_canvas):
     assignment.get_submission.assert_not_called()
 
 
-def test_send_packets_live_comments_on_reviewers_own_submission_identities_visible(tmp_path, patch_canvas):
+def test_send_packets_live_comments_on_reviewers_own_submission_identities_visible(
+    tmp_path, patch_canvas, patch_upload_attachment
+):
     canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
 
@@ -166,18 +184,21 @@ def test_send_packets_live_comments_on_reviewers_own_submission_identities_visib
     assert results[0].ok
     assignment.get_submission.assert_called_once_with(1)  # Ada's own submission, not Alan's
     ada_submission = subs[1]
+    # Text and attachments must land in ONE edit call, not one call per piece --
+    # a partial failure mid-upload should never leave a text-only comment behind.
     ada_submission.edit.assert_called_once()
     _, kwargs = ada_submission.edit.call_args
     text = kwargs["comment"]["text_comment"]
     assert "Alan Turing" in text
     assert "Q1 - Correctness (out of 10):" in text
     assert "Q2 - Code Style (out of 5):" in text
-    assert ada_submission.upload_comment.call_count == 2
-    ada_submission.upload_comment.assert_any_call(reviewer_file)
-    ada_submission.upload_comment.assert_any_call(peer_file)
+    assert len(kwargs["comment"]["file_ids"]) == 2
+
+    uploaded_paths = [path for _sub, path in patch_upload_attachment]
+    assert uploaded_paths == [reviewer_file, peer_file]
 
 
-def test_send_packets_default_is_anonymous(tmp_path, patch_canvas):
+def test_send_packets_default_is_anonymous(tmp_path, patch_canvas, patch_upload_attachment):
     canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
 
@@ -206,11 +227,51 @@ def test_send_packets_default_is_anonymous(tmp_path, patch_canvas):
     ada_submission = subs[1]
     _, kwargs = ada_submission.edit.call_args
     assert "Alan Turing" not in kwargs["comment"]["text_comment"]
+    assert len(kwargs["comment"]["file_ids"]) == 2
 
-    uploaded_paths = [call.args[0] for call in ada_submission.upload_comment.call_args_list]
+    uploaded_paths = [path for _sub, path in patch_upload_attachment]
     assert reviewer_file in uploaded_paths  # own file: real name, no anonymity needed
     assert peer_file not in uploaded_paths  # peer's file must NOT be uploaded under its real name/path
     assert any(Path(p).name == "peer_submission.pdf" for p in uploaded_paths)
+
+
+def test_send_packets_upload_failure_never_leaves_a_text_only_comment(tmp_path, patch_canvas, monkeypatch):
+    # Simulates exactly what happened against the real network policy split:
+    # Canvas's main API host is reachable but its file-storage host isn't,
+    # so an upload raises partway through. No comment -- text or otherwise
+    # -- should be posted in that case.
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+
+    def failing_upload(submission, path):
+        raise RuntimeError("simulated: file-storage host unreachable")
+
+    monkeypatch.setattr(cd, "_upload_attachment", failing_upload)
+
+    reviewer_file = str(tmp_path / "ada.pdf")
+    peer_file = str(tmp_path / "alan.pdf")
+    (tmp_path / "ada.pdf").write_text("x")
+    (tmp_path / "alan.pdf").write_text("x")
+
+    assignments_csv = write_assignments_csv(
+        tmp_path,
+        [["Ada Lovelace", "ada@school.edu", reviewer_file, "Alan Turing", "alan@school.edu", peer_file]],
+    )
+
+    results = cd.send_packets(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignments_csv=assignments_csv,
+        rubric_items=RUBRIC,
+        live=True,
+    )
+
+    assert not results[0].ok
+    assert "unreachable" in results[0].detail
+    ada_submission = subs[1]
+    ada_submission.edit.assert_not_called()
 
 
 def test_send_packets_reports_unmatched_email(tmp_path, patch_canvas):
@@ -420,3 +481,101 @@ def test_forward_reviews_default_is_anonymous(tmp_path, patch_canvas):
     assert "Ada Lovelace" not in text
     assert "8 - great structure." in text
     assert "nailed the edge cases" not in text
+
+
+def test_post_announcement_dry_run_does_not_post(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW1 - Peer Review",
+        rubric_items=RUBRIC,
+        due_text="Tuesday at midnight",
+        live=False,
+    )
+
+    assert result.ok
+    assert "DRY RUN" in result.detail
+    assert "HW1 - Peer Review" in result.detail
+    assert "Due Tuesday at midnight." in result.detail
+    assert "Q1" in result.detail and "Q2" in result.detail
+    course.create_discussion_topic.assert_not_called()
+
+
+def test_post_announcement_live_posts_generated_content(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+    course.create_discussion_topic.return_value = SimpleNamespace(
+        title="HW1 - Peer Review — Now Available",
+        html_url="https://fake/courses/1/discussion_topics/42",
+    )
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW1 - Peer Review",
+        rubric_items=RUBRIC,
+        due_text="Tuesday at midnight",
+        contact_line="Email me with questions.",
+        live=True,
+    )
+
+    assert result.ok
+    assert "discussion_topics/42" in result.detail
+
+    _, kwargs = course.create_discussion_topic.call_args
+    assert kwargs["is_announcement"] is True
+    assert "HW1 - Peer Review" in kwargs["title"]
+    assert "Due Tuesday at midnight." in kwargs["message"]
+    assert "Email me with questions." in kwargs["message"]
+    assert "https://fake/courses/1/assignments/99" in kwargs["message"]
+    assert "Q1, Q2" in kwargs["message"]
+
+
+def test_post_announcement_reflects_rubric_question_count(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+
+    five_questions = [
+        RubricItem(question=f"Q{i}", label=f"Criterion {i}", max_points="2") for i in range(1, 6)
+    ]
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW2 - Peer Review",
+        rubric_items=five_questions,
+        due_text="Friday",
+        live=False,
+    )
+
+    assert "all 5 rubric" in result.detail
+    assert "Q1, Q2, Q3, Q4, Q5" in result.detail
+
+
+def test_post_announcement_handles_api_error(patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+    course.create_discussion_topic.side_effect = RuntimeError("boom")
+
+    result = cd.post_announcement(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignment_name="HW1 - Peer Review",
+        rubric_items=RUBRIC,
+        due_text="Tuesday at midnight",
+        live=True,
+    )
+
+    assert not result.ok
+    assert "Canvas API error" in result.detail

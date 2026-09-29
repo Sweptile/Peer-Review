@@ -9,6 +9,7 @@ from peer_review.matching import (
     match_students,
     read_pairs_csv,
     read_roster_csv,
+    split_by_submission,
     validate_assignments,
     write_assignments_csv,
 )
@@ -145,6 +146,26 @@ def test_read_roster_csv_missing_column(tmp_path):
     path.write_text("name\nAda\n")
     with pytest.raises(MatchingError):
         read_roster_csv(str(path))
+
+
+def test_split_by_submission_separates_missing_files():
+    students = [
+        Student(name="Ada", email="ada@school.edu", submission_file="ada.pdf"),
+        Student(name="Alan", email="alan@school.edu", submission_file=""),
+        Student(name="Grace", email="grace@school.edu", submission_file="grace.pdf"),
+    ]
+    included, excluded = split_by_submission(students)
+    assert [s.name for s in included] == ["Ada", "Grace"]
+    assert [s.name for s in excluded] == ["Alan"]
+
+
+def test_split_by_submission_all_present():
+    students = make_students(4)
+    for i, s in enumerate(students):
+        students[i] = Student(name=s.name, email=s.email, submission_file=f"{i}.pdf")
+    included, excluded = split_by_submission(students)
+    assert len(included) == 4
+    assert excluded == []
 
 
 def test_write_and_reread_assignments_roundtrip(tmp_path):
