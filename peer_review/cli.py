@@ -59,6 +59,7 @@ def _cmd_send_packets(args: argparse.Namespace) -> int:
         peer_review_assignment_id=args.peer_review_assignment_id,
         assignments_csv=args.assignments,
         live=args.live,
+        anonymous=args.anonymous,
     )
     return _report(results, live=args.live, verb="reviewers commented on")
 
@@ -77,6 +78,7 @@ def _cmd_forward_reviews(args: argparse.Namespace) -> int:
         peer_review_assignment_id=args.peer_review_assignment_id,
         assignments_csv=args.assignments,
         live=args.live,
+        anonymous=args.anonymous,
     )
     return _report(results, live=args.live, verb="reviewees commented on")
 
@@ -115,6 +117,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_send.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
     p_send.add_argument("--live", action="store_true", help="Actually post (default is dry run)")
+    p_send.add_argument(
+        "--anonymous",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Double-blind: don't name the peer, and anonymize their file's name/PDF metadata "
+        "(default: on; use --no-anonymous for identities-visible mode)",
+    )
     p_send.set_defaults(func=_cmd_send_packets)
 
     p_fwd = sub.add_parser(
@@ -132,6 +141,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fwd.add_argument("--token", help="Canvas API token (or set CANVAS_API_TOKEN)")
     p_fwd.add_argument("--live", action="store_true", help="Actually post (default is dry run)")
+    p_fwd.add_argument(
+        "--anonymous",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Double-blind: don't name the reviewer when forwarding their feedback "
+        "(default: on; use --no-anonymous for identities-visible mode)",
+    )
     p_fwd.set_defaults(func=_cmd_forward_reviews)
 
     return parser

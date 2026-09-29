@@ -34,6 +34,15 @@ grade that assignment in SpeedGrader exactly like any other -- that's
 the point of routing reviews through a Canvas assignment instead of,
 say, a spreadsheet.
 
+Both commands default to double-blind: send_packets never names the
+peer whose work is attached (and hands over an anonymized copy of
+their file -- see anonymize.py), and forward_reviews never names the
+reviewer when it comments their feedback onto the reviewee. Nothing
+here can scrub a name a student types into their own review text or
+bakes into a non-PDF file's content -- that's on the assignment
+instructions, not this tool. Pass anonymous=False for the old
+identities-visible behavior.
+
 Nothing is sent to Canvas until you pass --live on the CLI. Without
 it, both commands run in dry-run mode: they resolve every student
 against the Canvas roster and print exactly what would be posted.
@@ -42,10 +51,13 @@ against the Canvas roster and print exactly what would be posted.
 from __future__ import annotations
 
 import csv
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 from canvasapi import Canvas
 
+from .anonymize import anonymize_copy
 from .review_parsing import extract_peer_review_section
 
 
@@ -99,6 +111,7 @@ def send_packets(
     peer_review_assignment_id: int,
     assignments_csv: str,
     live: bool = False,
+    anonymous: bool = True,
 ) -> list[ActionResult]:
     """Comment on each reviewer's own file + their assigned peer's file."""
     rows = _load_assignments_csv(assignments_csv)
@@ -108,41 +121,63 @@ def send_packets(
     roster = _roster_by_email(course)
 
     results: list[ActionResult] = []
-    for row in rows:
-        email = row["reviewer_email"].strip().lower()
-        user = roster.get(email)
-        if user is None:
-            results.append(ActionResult(email, False, "No matching Canvas enrollment for this email"))
-            continue
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        for row in rows:
+            email = row["reviewer_email"].strip().lower()
+            user = roster.get(email)
+            if user is None:
+                results.append(ActionResult(email, False, "No matching Canvas enrollment for this email"))
+                continue
 
-        note = (
-            f"You're assigned to grade your own submission (attached) and "
-            f"{row['peer_name']}'s submission (also attached). Submit ONE response to this "
-            f"assignment with two sections, using exactly these headers on their own line:\n\n"
-            f"Self Assessment:\n<your assessment of your own work>\n\n"
-            f"Peer Review:\n<your review of {row['peer_name']}'s work>\n\n"
-            f"Only the text under \"Peer Review:\" will be shared with {row['peer_name']} -- "
-            f"keep your self-assessment separate from it."
-        )
-        attachments = [row["reviewer_submission_file"], row["peer_submission_file"]]
+            peer_file = row["peer_submission_file"]
+            anon_warning = None
+            if anonymous:
+                display_name = "peer_submission" + Path(peer_file).suffix
+                anon = anonymize_copy(peer_file, tmp_dir, display_name)
+                peer_file = anon.path
+                anon_warning = anon.warning
 
-        if not live:
-            results.append(
-                ActionResult(
-                    email,
-                    True,
-                    f"[DRY RUN] would comment on Canvas user {user.id} ({user.name})'s "
-                    f'"Peer Review" submission: "{note}" + attach {attachments}',
+            if anonymous:
+                note = (
+                    "You're assigned to grade your own submission (attached) and an "
+                    "anonymous peer's submission (also attached). Submit ONE response to "
+                    "this assignment with two sections, using exactly these headers on "
+                    "their own line:\n\n"
+                    "Self Assessment:\n<your assessment of your own work>\n\n"
+                    "Peer Review:\n<your review of your peer's work>\n\n"
+                    "Only the text under \"Peer Review:\" will be shared with your peer -- "
+                    "keep your self-assessment separate from it, and don't put your name "
+                    "anywhere in your review (your peer won't be told who wrote it)."
                 )
-            )
-            continue
+            else:
+                note = (
+                    f"You're assigned to grade your own submission (attached) and "
+                    f"{row['peer_name']}'s submission (also attached). Submit ONE response to this "
+                    f"assignment with two sections, using exactly these headers on their own line:\n\n"
+                    f"Self Assessment:\n<your assessment of your own work>\n\n"
+                    f"Peer Review:\n<your review of {row['peer_name']}'s work>\n\n"
+                    f"Only the text under \"Peer Review:\" will be shared with {row['peer_name']} -- "
+                    f"keep your self-assessment separate from it."
+                )
+            attachments = [row["reviewer_submission_file"], peer_file]
 
-        try:
-            submission = assignment.get_submission(user.id)
-            _post_comment(submission, text=note, attachment_paths=attachments)
-            results.append(ActionResult(email, True, "posted"))
-        except Exception as exc:  # noqa: BLE001 -- surfaced per-student, not fatal to the batch
-            results.append(ActionResult(email, False, f"Canvas API error: {exc}"))
+            if not live:
+                detail = (
+                    f"[DRY RUN] would comment on Canvas user {user.id} ({user.name})'s "
+                    f'"Peer Review" submission: "{note}" + attach {attachments}'
+                )
+                if anon_warning:
+                    detail += f" -- WARNING: {anon_warning}"
+                results.append(ActionResult(email, True, detail))
+                continue
+
+            try:
+                submission = assignment.get_submission(user.id)
+                _post_comment(submission, text=note, attachment_paths=attachments)
+                detail = "posted" if not anon_warning else f"posted -- WARNING: {anon_warning}"
+                results.append(ActionResult(email, True, detail))
+            except Exception as exc:  # noqa: BLE001 -- surfaced per-student, not fatal to the batch
+                results.append(ActionResult(email, False, f"Canvas API error: {exc}"))
 
     return results
 
@@ -155,6 +190,7 @@ def forward_reviews(
     peer_review_assignment_id: int,
     assignments_csv: str,
     live: bool = False,
+    anonymous: bool = True,
 ) -> list[ActionResult]:
     """Pull each reviewer's submitted write-up and comment it onto the reviewee's own submission."""
     rows = _load_assignments_csv(assignments_csv)
@@ -197,7 +233,10 @@ def forward_reviews(
             )
             continue
 
-        note = f"Feedback on your submission from {row['reviewer_name']}:\n\n{review_text}"
+        if anonymous:
+            note = f"Feedback on your submission from an anonymous peer reviewer:\n\n{review_text}"
+        else:
+            note = f"Feedback on your submission from {row['reviewer_name']}:\n\n{review_text}"
 
         if not live:
             results.append(

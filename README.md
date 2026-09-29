@@ -82,6 +82,46 @@ see `peer_review/review_parsing.py` for the parsing contract this
 depends on, and why it refuses to guess (rather than forward the wrong
 thing) when a submission doesn't follow it.
 
+## Anonymity
+
+Both delivery commands default to **double-blind**: the reviewer is
+never told whose work they're grading, and the reviewee is never told
+who reviewed them. This is a real design decision with real edges, not
+a toggle that Just Works — worth understanding what it does and
+doesn't cover:
+
+- **The note text.** `send-packets` never mentions the peer's name;
+  `forward-reviews` never mentions the reviewer's name (just "an
+  anonymous peer reviewer").
+- **The peer's filename.** Gradescope's bulk download typically names
+  files after the student (`ada_lovelace_hw3.pdf`), and Canvas shows
+  whatever filename an attachment was uploaded under. `send-packets`
+  copies the peer's file to a generic name (`peer_submission.pdf`)
+  before attaching it, so the filename itself doesn't out them.
+- **PDF metadata.** A surprisingly common and easy-to-miss leak: a
+  document's `/Author` or `/Creator` field often carries the student's
+  real name even when nothing on the visible pages does (Word, Google
+  Docs, and LaTeX all tend to fill this in automatically). The same
+  copy step strips it via `pypdf` — see `peer_review/anonymize.py`.
+- **What it can't touch:** a name typed into a homework template's
+  header, a name a student signs at the end of their own review text,
+  or anything embedded in a non-PDF file's content. None of that is
+  reliably detectable without knowing the specific document format, so
+  this tool doesn't try to guess — it flags what it *did* check (e.g.
+  "not a PDF, content wasn't checked") back to you in the command's
+  output instead of silently assuming it's handled. Worth adding "no
+  name anywhere in your submission or your review" to the assignment
+  instructions if this matters to you; `send-packets`'s own comment
+  already includes that reminder for the review text.
+
+Since the comments themselves are always posted using your own Canvas
+API token, Canvas's UI already shows them as authored by you, not by
+the peer or reviewer — that part needed no extra work.
+
+Pass `--no-anonymous` to either command for the old identities-visible
+behavior (peer/reviewer named, files attached under their real names,
+no metadata stripped).
+
 ## The full workflow
 
 ```
@@ -169,12 +209,13 @@ python -m peer_review.cli send-packets \
 ```
 
 This **defaults to a dry run** — it resolves every reviewer's email
-against the live Canvas roster and prints exactly what it would post,
-without posting anything. Read the output, check for unmatched
-emails, then re-run with `--live` to actually comment on students'
-submissions. (Canvas allows comments on an assignment before a student
-has submitted to it, so this works even though nobody's turned in
-their review yet.)
+against the live Canvas roster, actually performs the anonymization
+step (see above), and prints exactly what it would post, without
+posting anything. Read the output, check for unmatched emails and any
+anonymization warnings, then re-run with `--live` to actually comment
+on students' submissions. (Canvas allows comments on an assignment
+before a student has submitted to it, so this works even though
+nobody's turned in their review yet.)
 
 ### Step 4 — students write their reviews
 

@@ -13,6 +13,7 @@ its own.
 from __future__ import annotations
 
 import csv
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -99,9 +100,17 @@ def test_send_packets_dry_run_does_not_touch_submission(tmp_path, patch_canvas):
     canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
 
+    # Dry run still needs the real files on disk: it actually performs the
+    # anonymization step (not just the Canvas comment) so problems like a
+    # missing pypdf install or a malformed PDF surface before --live.
+    reviewer_file = str(tmp_path / "ada.pdf")
+    peer_file = str(tmp_path / "alan.pdf")
+    (tmp_path / "ada.pdf").write_text("x")
+    (tmp_path / "alan.pdf").write_text("x")
+
     assignments_csv = write_assignments_csv(
         tmp_path,
-        [["Ada Lovelace", "ada@school.edu", "ada.pdf", "Alan Turing", "alan@school.edu", "alan.pdf"]],
+        [["Ada Lovelace", "ada@school.edu", reviewer_file, "Alan Turing", "alan@school.edu", peer_file]],
     )
 
     results = cd.send_packets(
@@ -119,7 +128,7 @@ def test_send_packets_dry_run_does_not_touch_submission(tmp_path, patch_canvas):
     assignment.get_submission.assert_not_called()
 
 
-def test_send_packets_live_comments_on_reviewers_own_submission(tmp_path, patch_canvas):
+def test_send_packets_live_comments_on_reviewers_own_submission_identities_visible(tmp_path, patch_canvas):
     canvas, course, assignment, subs = make_fake_canvas(ROSTER)
     patch_canvas["canvas"] = canvas
 
@@ -140,6 +149,7 @@ def test_send_packets_live_comments_on_reviewers_own_submission(tmp_path, patch_
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=True,
+        anonymous=False,
     )
 
     assert results[0].ok
@@ -151,6 +161,41 @@ def test_send_packets_live_comments_on_reviewers_own_submission(tmp_path, patch_
     assert ada_submission.upload_comment.call_count == 2
     ada_submission.upload_comment.assert_any_call(reviewer_file)
     ada_submission.upload_comment.assert_any_call(peer_file)
+
+
+def test_send_packets_default_is_anonymous(tmp_path, patch_canvas):
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER)
+    patch_canvas["canvas"] = canvas
+
+    reviewer_file = str(tmp_path / "ada_lovelace_hw.pdf")
+    peer_file = str(tmp_path / "alan_turing_hw.pdf")
+    (tmp_path / "ada_lovelace_hw.pdf").write_text("x")
+    (tmp_path / "alan_turing_hw.pdf").write_text("x")
+
+    assignments_csv = write_assignments_csv(
+        tmp_path,
+        [["Ada Lovelace", "ada@school.edu", reviewer_file, "Alan Turing", "alan@school.edu", peer_file]],
+    )
+
+    # No explicit `anonymous=` kwarg -- proving the default is double-blind.
+    results = cd.send_packets(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignments_csv=assignments_csv,
+        live=True,
+    )
+
+    assert results[0].ok
+    ada_submission = subs[1]
+    _, kwargs = ada_submission.edit.call_args
+    assert "Alan Turing" not in kwargs["comment"]["text_comment"]
+
+    uploaded_paths = [call.args[0] for call in ada_submission.upload_comment.call_args_list]
+    assert reviewer_file in uploaded_paths  # own file: real name, no anonymity needed
+    assert peer_file not in uploaded_paths  # peer's file must NOT be uploaded under its real name/path
+    assert any(Path(p).name == "peer_submission.pdf" for p in uploaded_paths)
 
 
 def test_send_packets_reports_unmatched_email(tmp_path, patch_canvas):
@@ -277,7 +322,7 @@ def test_forward_reviews_dry_run_reports_would_post(tmp_path, patch_canvas):
     subs[1].edit.assert_not_called()
 
 
-def test_forward_reviews_live_comments_reviewers_text_onto_reviewees_own_submission(tmp_path, patch_canvas):
+def test_forward_reviews_live_comments_reviewers_text_identities_visible(tmp_path, patch_canvas):
     submissions = {1: SimpleNamespace(workflow_state="submitted", body=COMBINED_BODY)}
     canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
     patch_canvas["canvas"] = canvas
@@ -294,6 +339,7 @@ def test_forward_reviews_live_comments_reviewers_text_onto_reviewees_own_submiss
         peer_review_assignment_id=99,
         assignments_csv=assignments_csv,
         live=True,
+        anonymous=False,
     )
 
     assert results[0].ok
@@ -305,4 +351,33 @@ def test_forward_reviews_live_comments_reviewers_text_onto_reviewees_own_submiss
     assert "Ada Lovelace" in text
     assert "Great work, nice tests!" in text
     # The self-assessment half must never reach the reviewee.
+    assert "nailed the edge cases" not in text
+
+
+def test_forward_reviews_default_is_anonymous(tmp_path, patch_canvas):
+    submissions = {1: SimpleNamespace(workflow_state="submitted", body=COMBINED_BODY)}
+    canvas, course, assignment, subs = make_fake_canvas(ROSTER, submissions=submissions)
+    patch_canvas["canvas"] = canvas
+
+    assignments_csv = write_assignments_csv(
+        tmp_path,
+        [["Ada Lovelace", "ada@school.edu", "ada.pdf", "Alan Turing", "alan@school.edu", "alan.pdf"]],
+    )
+
+    # No explicit `anonymous=` kwarg -- proving the default is double-blind.
+    results = cd.forward_reviews(
+        canvas_url="https://fake",
+        token="t",
+        course_id=1,
+        peer_review_assignment_id=99,
+        assignments_csv=assignments_csv,
+        live=True,
+    )
+
+    assert results[0].ok
+    alan_submission = subs[2]
+    _, kwargs = alan_submission.edit.call_args
+    text = kwargs["comment"]["text_comment"]
+    assert "Ada Lovelace" not in text
+    assert "Great work, nice tests!" in text
     assert "nailed the edge cases" not in text
