@@ -120,6 +120,7 @@ def send_packets(
     rubric_items: list[RubricItem],
     live: bool = False,
     anonymous: bool = True,
+    strip_leading_pages: int = 0,
 ) -> list[ActionResult]:
     """Comment on each reviewer's own file + their assigned peer's file."""
     rows = _load_assignments_csv(assignments_csv)
@@ -142,7 +143,9 @@ def send_packets(
             anon_warning = None
             if anonymous:
                 display_name = "peer_submission" + Path(peer_file).suffix
-                anon = anonymize_copy(peer_file, tmp_dir, display_name)
+                anon = anonymize_copy(
+                    peer_file, tmp_dir, display_name, strip_leading_pages=strip_leading_pages
+                )
                 peer_file = anon.path
                 anon_warning = anon.warning
 

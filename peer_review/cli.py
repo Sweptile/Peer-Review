@@ -75,6 +75,7 @@ def _cmd_send_packets(args: argparse.Namespace) -> int:
         rubric_items=rubric_items,
         live=args.live,
         anonymous=args.anonymous,
+        strip_leading_pages=args.strip_leading_pages,
     )
     return _report(results, live=args.live, verb="reviewers commented on")
 
@@ -157,6 +158,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Double-blind: don't name the peer, and anonymize their file's name/PDF metadata "
         "(default: on; use --no-anonymous for identities-visible mode)",
+    )
+    p_send.add_argument(
+        "--strip-leading-pages",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Remove N leading pages from the peer's PDF before attaching it -- e.g. 1 to drop "
+        "Gradescope's auto-generated cover page, which prints the student's name (default: 0)",
     )
     p_send.set_defaults(func=_cmd_send_packets)
 
