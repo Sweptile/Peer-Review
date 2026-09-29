@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# Real class data (roster/rubric/matching runs, downloaded submissions) --
+# never commit actual student names/emails. The examples/ fixtures are
+# fake data and are meant to be tracked.
+/roster.csv
+/rubric.csv
+/assignments.csv
+/submissions/
