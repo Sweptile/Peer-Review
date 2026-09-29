@@ -10,3 +10,6 @@ __pycache__/
 /roster.csv
 /assignments.csv
 /submissions/
+
+# Secrets -- never commit an API token.
+.env
