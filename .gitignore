@@ -11,6 +11,7 @@ __pycache__/
 /rubric.csv
 /assignments.csv
 /submissions/
+/archive/
 
 # Secrets -- never commit an API token.
 .env
