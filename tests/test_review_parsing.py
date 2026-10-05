@@ -141,3 +141,36 @@ def test_single_question_rubric():
     forward_text, error = parse_peer_review(body, single)
     assert error is None
     assert forward_text == "Q1 - Overall (out of 20):\n18 - excellent."
+
+
+def test_header_wrapped_across_lines_still_parses():
+    # A long header pasted into Canvas's editor can break across paragraphs.
+    # The packet's exact header is still there once whitespace is normalized.
+    body = (
+        "Peer Review:\n"
+        "Q1 - Correctness (out of 10):\n8 - good.\n\n"
+        "Q2 - Code\n\nStyle (out of 5):\n5 - clean.\n"
+    )
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "8 - good." in forward_text
+    assert "5 - clean." in forward_text
+    # The wrapped header's tail must not leak into the answer text.
+    assert "Style (out of 5):\n5 - clean." in forward_text
+    assert "Code\n" not in forward_text
+
+
+def test_label_containing_a_colon_does_not_leak_into_the_answer():
+    colon_rubric = [RubricItem(question="Q1", label="P1(a): setup", max_points="2")]
+    body = "Peer Review:\nQ1 - P1(a): setup (out of 2):\n2 - fine.\n"
+    forward_text, error = parse_peer_review(body, colon_rubric)
+    assert error is None
+    assert forward_text == "Q1 - P1(a): setup (out of 2):\n2 - fine."
+
+
+def test_loose_fallback_still_works_when_header_is_not_canonical():
+    body = "Peer Review:\nq1: 8 - good\n\nQ2 - my own wording:\n5 - clean\n"
+    forward_text, error = parse_peer_review(body, RUBRIC)
+    assert error is None
+    assert "8 - good" in forward_text
+    assert "5 - clean" in forward_text

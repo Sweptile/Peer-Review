@@ -97,16 +97,35 @@ def _split_top_level_sections(text: str) -> tuple[str | None, str | None, str | 
     return peer_text, self_text, None
 
 
+def _find_header_matches(section_text: str, item: RubricItem) -> list[re.Match]:
+    """Finds where one rubric question's header appears in a section.
+
+    Tries the exact header the packet template gave students first, with
+    any run of whitespace (line breaks included) treated as equivalent --
+    pasting a long header into Canvas's editor can wrap it across
+    paragraphs, and that shouldn't cost a student their review. Matching
+    the whole canonical header also means a label that happens to contain
+    a colon can't truncate the header early and leave the rest of the
+    label stuck to the front of the answer.
+
+    Only if the canonical header isn't there does it fall back to the
+    looser rule: the question id, then any run of non-colon text on the
+    same line, up to a colon ("Q1:", or "Q1 - whatever:"). (?!\\w) stops
+    "Q1" from matching inside "Q10".
+    """
+    canonical = r"\s+".join(re.escape(tok) for tok in format_question_header(item).split())
+    matches = list(re.finditer(canonical, section_text, re.IGNORECASE))
+    if matches:
+        return matches
+    loose = re.escape(item.question) + r"(?!\w)[^:\n]*:"
+    return list(re.finditer(loose, section_text, re.IGNORECASE))
+
+
 def _parse_questions(section_text: str, rubric_items: list[RubricItem]) -> tuple[dict[str, str] | None, str | None]:
     """Extracts {question_id: answer_text} from one section's plain text."""
     markers = {}
     for item in rubric_items:
-        # Matches a header line like "Q1 - Correctness (out of 10):" -- the
-        # question id, then any run of non-colon text (label/points, or
-        # nothing at all for a bare "Q1:"), up to the colon that ends the
-        # header. (?!\w) stops "Q1" from matching inside "Q10".
-        pattern = re.compile(re.escape(item.question) + r"(?!\w)[^:\n]*:", re.IGNORECASE)
-        matches = list(pattern.finditer(section_text))
+        matches = _find_header_matches(section_text, item)
         if len(matches) != 1:
             return None, (
                 f'question "{item.question}" is missing its header'
